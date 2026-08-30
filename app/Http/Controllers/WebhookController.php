@@ -41,7 +41,8 @@ class WebhookController extends Controller
         } elseif (str_contains($smsLower, 'supermoney') || str_contains($smsLower, 'utkarsh') || str_contains($smsLower, 'supercard')) {
             $sourceName = 'Utkarsh SuperMoney';
             $sourceType = 'CREDIT_CARD';
-        } elseif (str_contains($smsLower, 'bandhan') && (str_contains($smsLower, 'card') || str_contains($smsLower, 'credit'))) {
+        } elseif (str_contains($smsLower, 'bandhan') && (str_contains($smsLower, 'credit') || (str_contains($smsLower, 'card') && !str_contains($smsLower, 'debit')))) {
+            // FIXED: Agar 'credit' likha hai, YA 'card' likha hai par 'debit' nahi likha hai
             $sourceName = 'Bandhan CC';
             $sourceType = 'CREDIT_CARD';
         } 
@@ -53,6 +54,7 @@ class WebhookController extends Controller
             $sourceName = 'HDFC';
             $sourceType = 'ACCOUNT';
         } elseif (str_contains($smsLower, 'bandhan')) {
+            // Agar Debit Card hua, toh wo upar filter na hokar yahan aayega
             $sourceName = 'Bandhan';
             $sourceType = 'ACCOUNT';
         }
