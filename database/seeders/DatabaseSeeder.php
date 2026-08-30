@@ -5,59 +5,48 @@ namespace Database\Seeders;
 use Illuminate\Database\Seeder;
 use App\Models\Account;
 use App\Models\CreditCard;
+use App\Models\CategoryBudget;
 
 class DatabaseSeeder extends Seeder
 {
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // 1. Tumhare Bank Accounts Insert kar rahe hain
-        Account::create([
-            'bank_name' => 'Federal Jupiter',
-            'account_role' => 'The Engine (Primary Hub)',
-            'current_balance' => 2500.00,
-            'mab_required' => 0.00
-        ]);
+        // 1. Bank Accounts
+        Account::create(['bank_name' => 'Jupiter', 'account_role' => 'SAVINGS', 'current_balance' => 2368.00]);
+        Account::create(['bank_name' => 'HDFC', 'account_role' => 'SAVINGS', 'current_balance' => 10000.00]);
+        Account::create(['bank_name' => 'Bandhan', 'account_role' => 'SAVINGS', 'current_balance' => 4400.00]);
+        Account::create(['bank_name' => 'Slice', 'account_role' => 'SAVINGS', 'current_balance' => 0.00]);
 
-        Account::create([
-            'bank_name' => 'HDFC Bank',
-            'account_role' => 'The Vault (Emergency)',
-            'current_balance' => 10000.00,
-            'mab_required' => 10000.00
-        ]);
-
-        Account::create([
-            'bank_name' => 'Bandhan Bank',
-            'account_role' => 'Safety Net',
-            'current_balance' => 2800.00,
-            'mab_required' => 2000.00
-        ]);
-
-        // 2. Tumhare Credit Cards Insert kar rahe hain
+        // 2. Credit Cards
         CreditCard::create([
-            'card_name' => 'Utkarsh SuperMoney UPI',
+            'card_name' => 'Utkarsh SuperMoney',
             'total_limit' => 32000.00,
-            'available_limit' => 32000.00,
-            'billing_date' => 15, // Dummy date, ise tum baad mein update kar sakte ho
-            'is_upi_enabled' => true
+            'available_limit' => 29845.40,
+            'billed_outstanding' => 0.00,
+            'unbilled_outstanding' => 2155.00,
+            'billing_date' => 1
         ]);
-
         CreditCard::create([
-            'card_name' => 'Slice CC UPI',
-            'total_limit' => 25000.00,
-            'available_limit' => 25000.00,
-            'billing_date' => 20, 
-            'is_upi_enabled' => true
+            'card_name' => 'Slice CC',
+            'total_limit' => 26000.00,
+            'available_limit' => 26000.00,
+            'billed_outstanding' => 0.00,
+            'unbilled_outstanding' => 0.00,
+            'billing_date' => 21
         ]);
-
         CreditCard::create([
-            'card_name' => 'Bandhan Mastercard',
+            'card_name' => 'Bandhan CC',
             'total_limit' => 36000.00,
             'available_limit' => 36000.00,
-            'billing_date' => 10,
-            'is_upi_enabled' => false // Mastercard QR scan nahi hota
+            'billed_outstanding' => 0.00,
+            'unbilled_outstanding' => 0.00,
+            'billing_date' => 20
         ]);
+
+        // 3. Budgets
+        CategoryBudget::create(['category_name' => 'Food & Shopping', 'budget_limit' => 4000]);
+        CategoryBudget::create(['category_name' => 'Travel', 'budget_limit' => 2000]);
+        CategoryBudget::create(['category_name' => 'Shopping', 'budget_limit' => 1000]);
+        CategoryBudget::create(['category_name' => 'Bills & Utilities', 'budget_limit' => 1000]);
     }
 }
