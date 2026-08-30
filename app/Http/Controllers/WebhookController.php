@@ -7,21 +7,35 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Models\Transaction; 
 use App\Models\Account;      
-use App\Models\CreditCard;   
+use App\Models\CreditCard;
+use App\Models\User; // NAYA IMPORT: User Model ke liye
 
 class WebhookController extends Controller
 {
     public function handleSms(Request $request)
     {
         $sms = $request->input('raw_sms');
+        $userEmail = $request->input('user_email'); // NAYA: MacroDroid se email aayega
 
         if (!$sms) {
             return response()->json(['error' => 'No SMS received'], 400);
         }
 
+        if (!$userEmail) {
+            return response()->json(['error' => 'User Email missing in webhook'], 400);
+        }
+
+        // Email se User dhundho
+        $user = User::where('email', $userEmail)->first();
+        
+        if (!$user) {
+            return response()->json(['error' => 'User not found in ERP'], 404);
+        }
+
+        $userId = $user->id; // Is ID ko hum har jagah use karenge
         $smsLower = strtolower($sms);
 
-        // 1. AMOUNT PARSE KARNA (Super Smart Regex)
+        // 1. AMOUNT PARSE KARNA 
         $amount = 0;
         
         if (preg_match('/(?:rs\.?|inr|₹|amount|debited|credited|received|paid)\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
@@ -62,7 +76,7 @@ class WebhookController extends Controller
             $type = 'INCOME';
         }
 
-        // 🧠 4. THE SMART BRAIN (Auto-Categorizer jo delete ho gaya tha)
+        // 🧠 4. THE SMART BRAIN (Auto-Categorizer)
         $category = 'Unknown'; 
         $categoryMap = [
             'Food & Shopping' => ['swiggy', 'zomato', 'blinkit', 'zepto', 'instamart', 'mcdonalds', 'kfc', 'dominos', 'restaurant', 'food', 'grocery', 'bigbasket', 'dmart'],
@@ -88,7 +102,7 @@ class WebhookController extends Controller
             }
         }
 
-        // 🛑 4.5 THE MERGE & UPGRADE SHIELD (Fixed $rawSms to $sms)
+        // 🛑 4.5 THE MERGE & UPGRADE SHIELD (Multi-User Secured)
         if ($sourceName !== 'Unknown' && $amount > 0) {
             
             $refId = null;
@@ -96,7 +110,9 @@ class WebhookController extends Controller
                 $refId = $refMatches[1];
             }
 
-            $exactDuplicate = Transaction::where('raw_sms', $sms)
+            // Sirf is User ki history check karo duplicate ke liye
+            $exactDuplicate = Transaction::where('user_id', $userId)
+                ->where('raw_sms', $sms)
                 ->where('created_at', '>=', now()->subSeconds(30))
                 ->first();
 
@@ -105,7 +121,8 @@ class WebhookController extends Controller
             }
 
             if ($refId) {
-                $utrDuplicate = Transaction::where('raw_sms', 'LIKE', "%{$refId}%")
+                $utrDuplicate = Transaction::where('user_id', $userId)
+                    ->where('raw_sms', 'LIKE', "%{$refId}%")
                     ->where('created_at', '>=', now()->subDays(7))
                     ->exists();
                     
@@ -116,7 +133,8 @@ class WebhookController extends Controller
             }
 
             if ($refId) {
-                $recentTransactions = Transaction::where('amount', $amount)
+                $recentTransactions = Transaction::where('user_id', $userId)
+                    ->where('amount', $amount)
                     ->where('source', $sourceName)
                     ->where('type', $type)
                     ->where('created_at', '>=', now()->subMinutes(3))
@@ -125,7 +143,6 @@ class WebhookController extends Controller
                     
                 foreach ($recentTransactions as $oldTxn) {
                     if (!preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $oldTxn->raw_sms)) {
-                        
                         $oldTxn->raw_sms = $sms . ' [Merged Notif]';
                         $oldTxn->save();
                         
@@ -136,11 +153,12 @@ class WebhookController extends Controller
             }
         }
 
-        // 5. DATABASE & BALANCE SYNC
+        // 5. DATABASE & BALANCE SYNC (Multi-User)
         try {
             DB::beginTransaction();
 
             $transaction = Transaction::create([
+                'user_id'     => $userId, // NAYA: User ID save ho rahi hai
                 'amount'      => $amount,
                 'type'        => $type,
                 'category'    => $category,
@@ -153,7 +171,8 @@ class WebhookController extends Controller
 
             if ($sourceName !== 'Unknown') {
                 if ($sourceType === 'ACCOUNT') {
-                    $account = Account::where('bank_name', $sourceName)->first();
+                    // NAYA: Sirf is User ka bank account update karo
+                    $account = Account::where('user_id', $userId)->where('bank_name', $sourceName)->first();
                     if ($account) {
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $account->decrement('current_balance', $amount);
@@ -162,7 +181,8 @@ class WebhookController extends Controller
                         }
                     }
                 } elseif ($sourceType === 'CREDIT_CARD') {
-                    $card = CreditCard::where('card_name', $sourceName)->first();
+                    // NAYA: Sirf is User ka Credit Card update karo
+                    $card = CreditCard::where('user_id', $userId)->where('card_name', $sourceName)->first();
                     if ($card) {
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $card->decrement('available_limit', $amount);

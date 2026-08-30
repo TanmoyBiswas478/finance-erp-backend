@@ -7,52 +7,66 @@ use Illuminate\Http\Request;
 use App\Models\Account;
 use App\Models\CreditCard;
 use App\Models\Transaction;
-use Carbon\Carbon;
 use App\Models\Emi;
+use App\Models\CategoryBudget; // Ise import kiya
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Auth; // NAYA IMPORT: Auth ke liye
 
 class DashboardController extends Controller
 {
     public function index()
     {
-        $accounts = Account::all();
-        $creditCards = CreditCard::all();
+        $userId = Auth::id(); // Security: Current logged-in user ki ID
+        
         $currentMonth = Carbon::now()->month;
         $currentYear = Carbon::now()->year;
         
-        // Expenses
-        $currentMonthExpense = Transaction::whereIn('type', ['DEBIT', 'EXPENSE'])
+        // 1. Sirf is user ke Accounts aur Cards
+        $accounts = Account::where('user_id', $userId)->get();
+        $creditCards = CreditCard::where('user_id', $userId)->get();
+        
+        // 2. Current Month Expense (Sirf is user ka)
+        $currentMonthExpense = Transaction::where('user_id', $userId)
+            ->whereIn('type', ['DEBIT', 'EXPENSE'])
             ->whereMonth('date', $currentMonth)
             ->whereYear('date', $currentYear)
             ->sum('amount');
             
-        // 🎯 NAYA: Income Total for Dashboard (Fix for Problem 2)
-        $currentMonthIncome = Transaction::whereIn('type', ['CREDIT', 'INCOME'])
+        // 3. Current Month Income (Sirf is user ki)
+        $currentMonthIncome = Transaction::where('user_id', $userId)
+            ->whereIn('type', ['CREDIT', 'INCOME'])
             ->whereMonth('date', $currentMonth)
             ->whereYear('date', $currentYear)
             ->sum('amount');
             
-        // 🎯 NAYA: Recent Transactions Mapped Format (Fix for Problem 4 - Note & Type)
-        $recent_transactions = Transaction::orderBy('created_at', 'desc')->limit(5)->get()->map(function($t) {
-            return [
-                'id'       => $t->id,
-                'date'     => $t->date ?? $t->transaction_date,
-                'category' => $t->category ?? 'Uncategorized',
-                'note'     => $t->description ?? $t->raw_sms ?? '--', // Note me description dikhega
-                'type'     => $t->type ?? $t->transaction_type, // Type ab blank nahi rahega
-                'amount'   => $t->amount
-            ];
-        });
+        // 4. Recent Transactions (Sirf is user ke)
+        $recent_transactions = Transaction::where('user_id', $userId)
+            ->orderBy('created_at', 'desc')
+            ->limit(5)
+            ->get()
+            ->map(function($t) {
+                return [
+                    'id'       => $t->id,
+                    'date'     => $t->date ?? $t->transaction_date,
+                    'category' => $t->category ?? 'Uncategorized',
+                    'note'     => $t->description ?? $t->raw_sms ?? '--',
+                    'type'     => $t->type ?? $t->transaction_type,
+                    'amount'   => $t->amount
+                ];
+            });
 
-        // 🎯 SMART NET SPEND CALCULATION (Radar ke liye)
-        // Agar Debit hai toh plus karo, Agar Credit/Refund hai toh usko total me se minus kar do
-        $category_expenses = Transaction::whereMonth('date', $currentMonth)
+        // 5. Category Expenses (Sirf is user ke)
+        $category_expenses = Transaction::where('user_id', $userId)
+            ->whereIn('type', ['DEBIT', 'EXPENSE'])
+            ->whereMonth('date', $currentMonth)
             ->whereYear('date', $currentYear)
-            ->selectRaw("category, SUM(CASE WHEN type IN ('DEBIT', 'EXPENSE') THEN amount ELSE -amount END) as total")
+            ->selectRaw('category, SUM(amount) as total')
             ->groupBy('category')
             ->get();
 
-        $active_emis = Emi::where('is_active', true)->get();
-        $budgets = \App\Models\CategoryBudget::all();
+        // 6. Active EMIs & Budgets (Sirf is user ke)
+        $active_emis = Emi::where('user_id', $userId)->where('is_active', true)->get();
+        $budgets = CategoryBudget::where('user_id', $userId)->get();
         $budget_alerts = [];
 
         foreach ($budgets as $budget) {
@@ -63,12 +77,7 @@ class DashboardController extends Controller
                     break;
                 }
             }
-
-            // Agar Cashback/Refund kharche se zyada ho jaye, toh minimum 0 dikhao (Negative nahi)
-            $spent = max(0, $spent);
-            
             $percentage = $budget->budget_limit > 0 ? ($spent / $budget->budget_limit) * 100 : 0;
-            
             $budget_alerts[] = [
                 'category'   => $budget->category_name,
                 'limit'      => $budget->budget_limit,
@@ -85,7 +94,7 @@ class DashboardController extends Controller
                 'accounts'              => $accounts,
                 'credit_cards'          => $creditCards,
                 'current_month_expense' => $currentMonthExpense,
-                'current_month_income'  => $currentMonthIncome, // Ab frontend Credit bhi dikhayega!
+                'current_month_income'  => $currentMonthIncome,
                 'recent_transactions'   => $recent_transactions,
                 'category_expenses'     => $category_expenses,
                 'active_emis'           => $active_emis,
@@ -94,10 +103,10 @@ class DashboardController extends Controller
         ], 200);
     }
     
-    // (Baaki purane generateStatement aur payEmi functions wese hi rakhna)
     public function generateStatement($id)
     {
-        $card = CreditCard::findOrFail($id);
+        // 🔒 Security: Check karo ki card is user ka hi ho
+        $card = CreditCard::where('user_id', Auth::id())->findOrFail($id);
         $card->billed_outstanding += $card->unbilled_outstanding;
         $card->unbilled_outstanding = 0;
         $card->save();
@@ -106,20 +115,21 @@ class DashboardController extends Controller
 
     public function payEmi($id)
     {
-        $emi = \App\Models\Emi::findOrFail($id);
+        // 🔒 Security: Check karo ki EMI is user ki hi ho
+        $emi = Emi::where('user_id', Auth::id())->findOrFail($id);
         if($emi->paid_installments >= $emi->total_installments) {
             return response()->json(['status' => 'error', 'message' => 'EMI already fully paid']);
         }
 
         $sourceName = 'Unknown';
         if ($emi->source_type === 'ACCOUNT') {
-            $source = \App\Models\Account::find($emi->source_id);
+            $source = Account::where('user_id', Auth::id())->find($emi->source_id);
             if ($source) {
                 $source->decrement('current_balance', $emi->emi_amount);
                 $sourceName = $source->bank_name;
             }
         } elseif ($emi->source_type === 'CREDIT_CARD') {
-            $source = \App\Models\CreditCard::find($emi->source_id);
+            $source = CreditCard::where('user_id', Auth::id())->find($emi->source_id);
             if ($source) {
                 $source->decrement('available_limit', $emi->emi_amount);
                 $source->increment('unbilled_outstanding', $emi->emi_amount);
@@ -127,7 +137,9 @@ class DashboardController extends Controller
             }
         }
 
-        \App\Models\Transaction::create([
+        // 🔒 EMI payment ka transaction bhi is user ke naam pe save hoga
+        Transaction::create([
+            'user_id'     => Auth::id(),
             'date'        => \Carbon\Carbon::now()->format('Y-m-d'),
             'amount'      => $emi->emi_amount,
             'type'        => 'EXPENSE',
