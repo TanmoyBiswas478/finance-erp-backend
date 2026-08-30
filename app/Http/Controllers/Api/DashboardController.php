@@ -8,7 +8,7 @@ use App\Models\Account;
 use App\Models\CreditCard;
 use App\Models\Transaction;
 use Carbon\Carbon;
-use App\Models\Emi; // NAYA IMPORT
+use App\Models\Emi;
 
 class DashboardController extends Controller
 {
@@ -24,27 +24,27 @@ class DashboardController extends Controller
         $currentMonth = Carbon::now()->month;
         $currentYear = Carbon::now()->year;
         
-        // 3. Current month ke total expenses (DEBIT transactions)
-        $currentMonthExpense = Transaction::where('transaction_type', 'DEBIT')
-            ->whereMonth('transaction_date', $currentMonth)
-            ->whereYear('transaction_date', $currentYear)
+        // 3. Current month ke total expenses (DEBIT transactions) - FIXED COLUMN NAMES
+        $currentMonthExpense = Transaction::where('type', 'DEBIT')
+            ->whereMonth('date', $currentMonth)
+            ->whereYear('date', $currentYear)
             ->sum('amount');
             
         // 4. Last 5 recent transactions
         $recent_transactions = Transaction::orderBy('created_at', 'desc')->limit(5)->get();
 
-        // 5. NAYA LOGIC: Current month ke expenses ko category ke hisaab se group karo (Chart ke liye)
-        $category_expenses = Transaction::where('transaction_type', 'DEBIT')
-            ->whereMonth('transaction_date', $currentMonth)
-            ->whereYear('transaction_date', $currentYear)
+        // 5. Current month ke expenses ko category ke hisaab se group karo - FIXED COLUMN NAMES
+        $category_expenses = Transaction::where('type', 'DEBIT')
+            ->whereMonth('date', $currentMonth)
+            ->whereYear('date', $currentYear)
             ->selectRaw('category, SUM(amount) as total')
             ->groupBy('category')
             ->get();
 
-        // 6. NAYA LOGIC: Active EMIs fetch karo
+        // 6. Active EMIs fetch karo
         $active_emis = Emi::where('is_active', true)->get();
 
-        // 7. NAYA LOGIC: Budget vs Spend calculate karo
+        // 7. Budget vs Spend calculate karo
         $budgets = \App\Models\CategoryBudget::all();
         $budget_alerts = [];
 
@@ -70,7 +70,6 @@ class DashboardController extends Controller
             ];
         }
 
-        // Angular ko structured JSON return karo (is array mein bas 'budget_alerts' add karna hai)
         return response()->json([
             'status' => 'success',
             'data' => [
@@ -80,7 +79,7 @@ class DashboardController extends Controller
                 'recent_transactions' => $recent_transactions,
                 'category_expenses' => $category_expenses,
                 'active_emis' => $active_emis,
-                'budget_alerts' => $budget_alerts // NAYA ADD KIYA
+                'budget_alerts' => $budget_alerts
             ]
         ], 200);
     }
@@ -108,26 +107,33 @@ class DashboardController extends Controller
             return response()->json(['status' => 'error', 'message' => 'EMI already fully paid']);
         }
 
-        // 1. Transaction create karo
-        \App\Models\Transaction::create([
-            'transaction_date' => \Carbon\Carbon::now()->format('Y-m-d'),
-            'amount' => $emi->emi_amount,
-            'transaction_type' => 'DEBIT',
-            'category' => 'EMI Payment',
-            'source_type' => $emi->source_type,
-            'source_id' => $emi->source_id,
-            'description' => $emi->emi_name . ' - Installment ' . ($emi->paid_installments + 1),
-        ]);
-
-        // 2. Bank Account ya Credit Card se balance kaato
+        // 1. Bank Account ya Credit Card se balance kaato aur unka naam nikalo
+        $sourceName = 'Unknown';
         if ($emi->source_type === 'ACCOUNT') {
             $source = \App\Models\Account::find($emi->source_id);
-            $source->decrement('current_balance', $emi->emi_amount);
+            if ($source) {
+                $source->decrement('current_balance', $emi->emi_amount);
+                $sourceName = $source->bank_name;
+            }
         } elseif ($emi->source_type === 'CREDIT_CARD') {
             $source = \App\Models\CreditCard::find($emi->source_id);
-            $source->decrement('available_limit', $emi->emi_amount);
-            $source->increment('unbilled_outstanding', $emi->emi_amount);
+            if ($source) {
+                $source->decrement('available_limit', $emi->emi_amount);
+                $source->increment('unbilled_outstanding', $emi->emi_amount);
+                $sourceName = $source->card_name;
+            }
         }
+
+        // 2. Transaction create karo - FIXED COLUMN NAMES
+        \App\Models\Transaction::create([
+            'date' => \Carbon\Carbon::now(), // transaction_date -> date
+            'amount' => $emi->emi_amount,
+            'type' => 'DEBIT', // transaction_type -> type
+            'category' => 'EMI Payment',
+            'source_type' => $emi->source_type,
+            'source' => $sourceName, // source_id ki jagah seedha Bank/Card ka naam bhej rahe hain
+            'description' => $emi->emi_name . ' - Installment ' . ($emi->paid_installments + 1),
+        ]);
 
         // 3. EMI ka progress update karo
         $emi->increment('paid_installments');
