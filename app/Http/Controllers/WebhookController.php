@@ -1,12 +1,13 @@
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Http\Controllers; // Check kar lena tumhara namespace yahi hai ya 'Api' hai
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Models\Transaction; // Tumhara transaction model
-use App\Models\Account;     // Tumhara account/card model
+use App\Models\Transaction;
+use App\Models\Account;      // NAYA IMPORT: Balance katne ke liye
+use App\Models\CreditCard;   // NAYA IMPORT: Limit katne ke liye
 
 class WebhookController extends Controller
 {
@@ -42,7 +43,6 @@ class WebhookController extends Controller
             $sourceName = 'Utkarsh SuperMoney';
             $sourceType = 'CREDIT_CARD';
         } elseif (str_contains($smsLower, 'bandhan') && (str_contains($smsLower, 'credit') || (str_contains($smsLower, 'card') && !str_contains($smsLower, 'debit')))) {
-            // FIXED: Agar 'credit' likha hai, YA 'card' likha hai par 'debit' nahi likha hai
             $sourceName = 'Bandhan CC';
             $sourceType = 'CREDIT_CARD';
         } 
@@ -54,7 +54,6 @@ class WebhookController extends Controller
             $sourceName = 'HDFC';
             $sourceType = 'ACCOUNT';
         } elseif (str_contains($smsLower, 'bandhan')) {
-            // Agar Debit Card hua, toh wo upar filter na hokar yahan aayega
             $sourceName = 'Bandhan';
             $sourceType = 'ACCOUNT';
         }
@@ -65,12 +64,12 @@ class WebhookController extends Controller
             $type = 'INCOME';
         }
 
-        // 4. DATABASE MEIN TRANSACTION SAVE KARNA
+        // 4. DATABASE MEIN TRANSACTION SAVE KARNA AUR BALANCE UPDATE KARNA
         try {
             DB::beginTransaction();
 
+            // A. Transaction Save Karo (title hata diya kyunki humne DB se wo column shayad hata diya tha)
             $transaction = Transaction::create([
-                'title'       => 'Auto SMS: ' . $sourceName,
                 'amount'      => $amount,
                 'type'        => $type,
                 'category'    => 'Uncategorized',
@@ -80,18 +79,42 @@ class WebhookController extends Controller
                 'date'        => now(),
             ]);
 
+            // B. YAHAN HAI ASLI JADOO: Balance Update Logic jo missing tha!
+            if ($sourceName !== 'Unknown') {
+                if ($sourceType === 'ACCOUNT') {
+                    $account = Account::where('bank_name', $sourceName)->first();
+                    if ($account) {
+                        if ($type === 'EXPENSE') {
+                            $account->decrement('current_balance', $amount);
+                        } else {
+                            $account->increment('current_balance', $amount);
+                        }
+                    }
+                } elseif ($sourceType === 'CREDIT_CARD') {
+                    $card = CreditCard::where('card_name', $sourceName)->first();
+                    if ($card) {
+                        if ($type === 'EXPENSE') {
+                            $card->decrement('available_limit', $amount);
+                            $card->increment('unbilled_outstanding', $amount);
+                        } else {
+                            $card->increment('available_limit', $amount);
+                        }
+                    }
+                }
+            }
+
             DB::commit();
 
-            Log::info('Transaction Saved Successfully:', ['id' => $transaction->id, 'amount' => $amount]);
+            Log::info('✅ SUCCESS: Transaction Saved AND Balance Updated!', ['id' => $transaction->id, 'amount' => $amount, 'bank' => $sourceName]);
 
             return response()->json([
                 'status'  => 'success',
-                'message' => 'Transaction saved to database',
+                'message' => 'Transaction saved and balance updated',
                 'data'    => $transaction
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to save transaction: ' . $e->getMessage());
+            Log::error('❌ Failed to save transaction: ' . $e->getMessage());
 
             return response()->json([
                 'status'  => 'error',
