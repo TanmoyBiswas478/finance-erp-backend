@@ -31,13 +31,13 @@ class WebhookController extends Controller
         if (str_contains($smsLower, 'slice')) {
             $sourceName = 'Slice CC';
             $sourceType = 'CREDIT_CARD';
-        } elseif (str_contains($smsLower, 'supermoney') || str_contains($smsLower, 'utkarsh')) {
+        } elseif (str_contains($smsLower, 'supermoney') || str_contains($smsLower, 'utkarsh') || str_contains($smsLower, 'supercard')) {
             $sourceName = 'Utkarsh SuperMoney';
             $sourceType = 'CREDIT_CARD';
         } elseif (str_contains($smsLower, 'bandhan') && str_contains($smsLower, 'card')) {
             $sourceName = 'Bandhan CC';
             $sourceType = 'CREDIT_CARD';
-        } 
+        }
         // --- Bank Accounts ---
         elseif (str_contains($smsLower, 'jupiter') || str_contains($smsLower, 'federal')) {
             $sourceName = 'Jupiter';
@@ -51,16 +51,16 @@ class WebhookController extends Controller
         }
 
         // 3. CREDIT YA DEBIT CHECK
-        $type = 'DEBIT'; 
+        $type = 'DEBIT';
         if (str_contains($smsLower, 'credited') || str_contains($smsLower, 'received') || str_contains($smsLower, 'repayment')) {
             $type = 'CREDIT';
         }
 
         // 4. LOG MEIN PRINT KARNA (Check karne ke liye)
         Log::info('New Transaction Detected:', [
-            'Source' => $sourceName, 
-            'Type' => $sourceType, 
-            'Amount' => $amount, 
+            'Source' => $sourceName,
+            'Type' => $sourceType,
+            'Amount' => $amount,
             'Transaction_Type' => $type
         ]);
 
