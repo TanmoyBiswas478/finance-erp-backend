@@ -66,16 +66,34 @@ class WebhookController extends Controller
             $type = 'INCOME';
         }
 
-        // 🧠 4. AUTO-CATEGORIZER (Fix: 'Uncategorized' ki jagah smart category)
-        $category = 'Uncategorized';
-        if (preg_match('/(swiggy|zomato|kfc|mcdonalds|food|restaurant)/i', $smsLower)) {
-            $category = 'Food & Shopping'; 
-        } elseif (preg_match('/(amazon|flipkart|myntra|shopping)/i', $smsLower)) {
-            $category = 'Shopping';
-        } elseif (preg_match('/(uber|ola|rapido|irctc|ticket|travel)/i', $smsLower)) {
-            $category = 'Travel';
-        } elseif (preg_match('/(recharge|jio|airtel|vi|bill|electricity|emi)/i', $smsLower)) {
-            $category = 'Bills & Utilities';
+        // 🧠 4. THE SMART BRAIN (Auto-Categorizer for BOTH Debit & Credit)
+        $category = 'Unknown'; 
+        
+        // Comprehensive Dictionary
+        $categoryMap = [
+            'Food & Shopping' => ['swiggy', 'zomato', 'blinkit', 'zepto', 'instamart', 'mcdonalds', 'kfc', 'dominos', 'restaurant', 'food', 'grocery', 'bigbasket', 'dmart'],
+            'Shopping' => ['amazon', 'flipkart', 'myntra', 'ajio', 'meesho', 'zudio', 'pantaloons', 'lifestyle', 'mall', 'store', 'retail', 'reliance'],
+            'Travel' => ['uber', 'ola', 'rapido', 'namma yatri', 'irctc', 'makemytrip', 'goibibo', 'flight', 'ticket', 'petrol', 'fuel', 'indian oil', 'bharat petroleum', 'hpcl', 'metro', 'pump'],
+            'Bills & Utilities' => ['recharge', 'jio', 'airtel', 'vi', 'bsnl', 'electricity', 'water', 'gas', 'broadband', 'wifi', 'emi', 'subscription', 'netflix', 'prime', 'spotify']
+        ];
+
+        // 1. Pehle pure message ko scan karo (chahe Credit ho ya Debit)
+        foreach ($categoryMap as $catName => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (str_contains($smsLower, $keyword)) {
+                    $category = $catName;
+                    break 2; // Match milte hi dhoondhna band karo
+                }
+            }
+        }
+
+        // 2. Agar koi keyword nahi mila (Unknown reh gaya), tab hum fallback lagayenge
+        if ($category === 'Unknown') {
+            if ($type === 'INCOME') {
+                $category = 'Income / Cashback';
+            } else {
+                $category = 'Other Expenses';
+            }
         }
 
         // 5. DATABASE & BALANCE SYNC

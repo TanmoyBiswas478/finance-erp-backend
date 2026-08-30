@@ -43,11 +43,11 @@ class DashboardController extends Controller
             ];
         });
 
-        // Category Expenses
-        $category_expenses = Transaction::whereIn('type', ['DEBIT', 'EXPENSE'])
-            ->whereMonth('date', $currentMonth)
+        // 🎯 SMART NET SPEND CALCULATION (Radar ke liye)
+        // Agar Debit hai toh plus karo, Agar Credit/Refund hai toh usko total me se minus kar do
+        $category_expenses = Transaction::whereMonth('date', $currentMonth)
             ->whereYear('date', $currentYear)
-            ->selectRaw('category, SUM(amount) as total')
+            ->selectRaw("category, SUM(CASE WHEN type IN ('DEBIT', 'EXPENSE') THEN amount ELSE -amount END) as total")
             ->groupBy('category')
             ->get();
 
@@ -58,12 +58,17 @@ class DashboardController extends Controller
         foreach ($budgets as $budget) {
             $spent = 0;
             foreach ($category_expenses as $expense) {
-                if (strtolower($expense->category) === strtolower($budget->category_name)) {
+                if (trim(strtolower($expense->category)) === trim(strtolower($budget->category_name))) {
                     $spent = $expense->total;
                     break;
                 }
             }
+
+            // Agar Cashback/Refund kharche se zyada ho jaye, toh minimum 0 dikhao (Negative nahi)
+            $spent = max(0, $spent);
+            
             $percentage = $budget->budget_limit > 0 ? ($spent / $budget->budget_limit) * 100 : 0;
+            
             $budget_alerts[] = [
                 'category'   => $budget->category_name,
                 'limit'      => $budget->budget_limit,
