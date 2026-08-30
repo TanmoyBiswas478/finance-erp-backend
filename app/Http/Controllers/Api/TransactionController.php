@@ -16,28 +16,48 @@ class TransactionController extends Controller
         $transaction = Transaction::create($request->all());
 
         // Naye columns ke hisaab se request data nikalo
-        $type = $request->type; // transaction_type ki jagah type
+        $type = $request->type; 
         $amount = $request->amount;
         $sourceType = $request->source_type;
-        $sourceName = $request->source; // source_id ki jagah seedha source (naam)
+        $sourceName = strtolower(trim($request->source)); // Incoming naam ko lowercase kar lo
 
-        // Source find karo (Ab ID se nahi, Bank/Card ke naam se dhoondhenge)
+        // 🎯 NAYA LOGIC: Aliases (Jiske multiple naam ho sakte hain)
+        $bankAliases = [
+            'federal' => 'Jupiter',
+            'jupiter' => 'Jupiter',
+            'hdfc'    => 'HDFC',
+            'bandhan' => 'Bandhan',
+            'slice'   => 'Slice'
+        ];
+
+        $cardAliases = [
+            'utkarsh'    => 'Utkarsh SuperMoney',
+            'supermoney' => 'Utkarsh SuperMoney',
+            'slice'      => 'Slice CC',
+            'bandhan'    => 'Bandhan CC'
+        ];
+
+        // Source find karo (Alias check karke aur Case-Insensitive dhoondh kar)
         $source = null;
         if ($sourceType === 'ACCOUNT') {
-            $source = Account::where('bank_name', $sourceName)->first();
+            // Agar alias array mein naam hai, toh wo lo, warna original naam
+            $resolvedName = $bankAliases[$sourceName] ?? $request->source;
+            $source = Account::whereRaw('LOWER(bank_name) = ?', [strtolower($resolvedName)])->first();
+            
         } elseif ($sourceType === 'CREDIT_CARD') {
-            $source = CreditCard::where('card_name', $sourceName)->first();
+            $resolvedName = $cardAliases[$sourceName] ?? $request->source;
+            $source = CreditCard::whereRaw('LOWER(card_name) = ?', [strtolower($resolvedName)])->first();
         }
 
         // Agar account/card database mein mil gaya, tabhi balance update karo
         if ($source) {
             // 2. SMART CALCULATIONS
-            if ($type === 'DEBIT' || $type === 'EXPENSE') { // MacroDroid 'EXPENSE' bhejta hai
+            if ($type === 'DEBIT' || $type === 'EXPENSE') { 
                 if ($sourceType === 'ACCOUNT') {
                     $source->decrement('current_balance', $amount);
                 } elseif ($sourceType === 'CREDIT_CARD') {
                     $source->decrement('available_limit', $amount);
-                    $source->increment('unbilled_outstanding', $amount); // CC ka naya outstanding badh gaya
+                    $source->increment('unbilled_outstanding', $amount); 
                 }
             } 
             elseif ($type === 'CREDIT' || $type === 'INCOME') {
@@ -46,25 +66,20 @@ class TransactionController extends Controller
                 }
             }
             elseif ($type === 'TRANSFER' || $type === 'CC_BILL') {
-                // Transfer/Bill mein hamesha source (Bank) se paisa katta hai
                 $source->decrement('current_balance', $amount);
 
-                // Ab target ko find karo (Paisa kahan jaa raha hai)
                 $targetType = $request->transfer_target_type;
-                $targetId = $request->transfer_target_id; // Yeh frontend se aayega, toh id theek hai
+                $targetId = $request->transfer_target_id; 
 
                 if ($targetType === 'ACCOUNT') {
-                    // Bank-to-Bank Transfer
                     $target = Account::find($targetId);
                     if ($target) {
                         $target->increment('current_balance', $amount);
                     }
                 } elseif ($targetType === 'CREDIT_CARD') {
-                    // Credit Card Bill Payment
                     $target = CreditCard::find($targetId);
                     if ($target) {
                         $target->increment('available_limit', $amount);
-                        // Agar bill pay hua hai, toh outstanding kam kardo
                         if ($target->billed_outstanding >= $amount) {
                             $target->decrement('billed_outstanding', $amount);
                         } else {
