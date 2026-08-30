@@ -7,21 +7,29 @@ use Illuminate\Http\Request;
 use App\Models\Transaction;
 use App\Models\Account;
 use App\Models\CreditCard;
+use Illuminate\Support\Facades\Log;
 
 class TransactionController extends Controller
 {
     public function store(Request $request)
     {
-        // 1. Database mein transaction save karo
-        $transaction = Transaction::create($request->all());
+        // 1. DATA MAPPING (YAHI ASLI PROBLEM THI)
+        // Phone abhi bhi purane keys bhej rahe hain, hum unko naye columns mein map kar rahe hain
+        $type = strtoupper(trim($request->type ?? $request->transaction_type ?? ''));
+        $sourceNameOriginal = trim($request->source ?? $request->source_id ?? '');
+        $date = $request->date ?? $request->transaction_date ?? now();
+        $amount = (float) $request->amount;
+        $sourceType = strtoupper(trim($request->source_type ?? 'ACCOUNT'));
 
-        // Naye columns ke hisaab se request data nikalo
-        $type = $request->type; 
-        $amount = $request->amount;
-        $sourceType = $request->source_type;
-        $sourceName = strtolower(trim($request->source)); // Incoming naam ko lowercase kar lo
+        // 2. Database mein sahi mapped data save karo
+        $transactionData = $request->all();
+        $transactionData['type'] = $type;
+        $transactionData['source'] = $sourceNameOriginal;
+        $transactionData['date'] = $date;
+        
+        $transaction = Transaction::create($transactionData);
 
-        // 🎯 NAYA LOGIC: Aliases (Jiske multiple naam ho sakte hain)
+        // 3. Aliases (Jiske multiple naam ho sakte hain)
         $bankAliases = [
             'federal' => 'Jupiter',
             'jupiter' => 'Jupiter',
@@ -33,25 +41,22 @@ class TransactionController extends Controller
         $cardAliases = [
             'utkarsh'    => 'Utkarsh SuperMoney',
             'supermoney' => 'Utkarsh SuperMoney',
-            'slice'      => 'Slice CC',
-            'bandhan'    => 'Bandhan CC'
+            'slice cc'   => 'Slice CC',
+            'bandhan cc' => 'Bandhan CC'
         ];
 
-        // Source find karo (Alias check karke aur Case-Insensitive dhoondh kar)
+        // 4. Source find karo
         $source = null;
         if ($sourceType === 'ACCOUNT') {
-            // Agar alias array mein naam hai, toh wo lo, warna original naam
-            $resolvedName = $bankAliases[$sourceName] ?? $request->source;
+            $resolvedName = $bankAliases[strtolower($sourceNameOriginal)] ?? $sourceNameOriginal;
             $source = Account::whereRaw('LOWER(bank_name) = ?', [strtolower($resolvedName)])->first();
-            
         } elseif ($sourceType === 'CREDIT_CARD') {
-            $resolvedName = $cardAliases[$sourceName] ?? $request->source;
+            $resolvedName = $cardAliases[strtolower($sourceNameOriginal)] ?? $sourceNameOriginal;
             $source = CreditCard::whereRaw('LOWER(card_name) = ?', [strtolower($resolvedName)])->first();
         }
 
-        // Agar account/card database mein mil gaya, tabhi balance update karo
+        // 5. Balance update karo (Ab 100% deduct hoga)
         if ($source) {
-            // 2. SMART CALCULATIONS
             if ($type === 'DEBIT' || $type === 'EXPENSE') { 
                 if ($sourceType === 'ACCOUNT') {
                     $source->decrement('current_balance', $amount);
@@ -68,7 +73,7 @@ class TransactionController extends Controller
             elseif ($type === 'TRANSFER' || $type === 'CC_BILL') {
                 $source->decrement('current_balance', $amount);
 
-                $targetType = $request->transfer_target_type;
+                $targetType = strtoupper(trim($request->transfer_target_type ?? ''));
                 $targetId = $request->transfer_target_id; 
 
                 if ($targetType === 'ACCOUNT') {
@@ -89,6 +94,8 @@ class TransactionController extends Controller
                     }
                 }
             }
+        } else {
+            Log::error("Bank nahi mila check karo: '" . $sourceNameOriginal . "'");
         }
 
         return response()->json(['status' => 'success', 'data' => $transaction]);
