@@ -1,13 +1,13 @@
 <?php
 
-namespace App\Http\Controllers; // Check kar lena tumhara namespace yahi hai ya 'Api' hai
+namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Models\Transaction;
-use App\Models\Account;      // NAYA IMPORT: Balance katne ke liye
-use App\Models\CreditCard;   // NAYA IMPORT: Limit katne ke liye
+use App\Models\Transaction; 
+use App\Models\Account;      
+use App\Models\CreditCard;   
 
 class WebhookController extends Controller
 {
@@ -21,9 +21,19 @@ class WebhookController extends Controller
 
         $smsLower = strtolower($sms);
 
-        // 1. AMOUNT PARSE KARNA
+        // 1. AMOUNT PARSE KARNA (Super Smart Regex - Bina 'Rs.' ke bhi kaam karega)
         $amount = 0;
-        if (preg_match('/(?:rs\.?|inr)\s*([\d,]+\.?\d*)/i', $sms, $matches)) {
+        
+        // Pattern 1: Amount keyword ke aage ya peeche number dhoondhna
+        if (preg_match('/(?:rs\.?|inr|₹|amount|debited|credited|received|paid)\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
+            $amount = floatval(str_replace(',', '', $matches[1]));
+        }
+        // Pattern 2: Agar shuruat mein number ho (e.g., "500 debited from...")
+        if ($amount == 0 && preg_match('/^([\d,]+\.?\d*)\s*(?:debited|credited|spent|received)/i', $sms, $matches)) {
+            $amount = floatval(str_replace(',', '', $matches[1]));
+        }
+        // Pattern 3: Aakhiri umeed (Sirf koi standard 2-decimal point wala number dhoondho e.g. 100.50)
+        if ($amount == 0 && preg_match('/([\d,]+\.\d{2})/', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
 
@@ -31,95 +41,89 @@ class WebhookController extends Controller
             return response()->json(['error' => 'Could not parse valid amount'], 422);
         }
 
-        // 2. SOURCE & TYPE PEHCHANNA
+        // 2. SOURCE PEHCHANNA
         $sourceName = 'Unknown';
         $sourceType = 'ACCOUNT';
 
-        // Credit Cards
+        // Credit Cards & Bank Check
         if (str_contains($smsLower, 'slice')) {
-            $sourceName = 'Slice CC';
-            $sourceType = 'CREDIT_CARD';
-        } elseif (str_contains($smsLower, 'supermoney') || str_contains($smsLower, 'utkarsh') || str_contains($smsLower, 'supercard')) {
-            $sourceName = 'Utkarsh SuperMoney';
-            $sourceType = 'CREDIT_CARD';
-        } elseif (str_contains($smsLower, 'bandhan') && (str_contains($smsLower, 'credit') || (str_contains($smsLower, 'card') && !str_contains($smsLower, 'debit')))) {
-            $sourceName = 'Bandhan CC';
-            $sourceType = 'CREDIT_CARD';
-        } 
-        // Bank Accounts
-        elseif (str_contains($smsLower, 'jupiter') || str_contains($smsLower, 'federal')) {
-            $sourceName = 'Jupiter';
-            $sourceType = 'ACCOUNT';
+            $sourceName = 'Slice CC'; $sourceType = 'CREDIT_CARD';
+        } elseif (preg_match('/(supermoney|utkarsh|supercard)/i', $smsLower)) {
+            $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
+        } elseif (str_contains($smsLower, 'bandhan') && preg_match('/(credit|card)/i', $smsLower) && !str_contains($smsLower, 'debit')) {
+            $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
+        } elseif (preg_match('/(jupiter|federal)/i', $smsLower)) {
+            $sourceName = 'Jupiter'; $sourceType = 'ACCOUNT';
         } elseif (str_contains($smsLower, 'hdfc')) {
-            $sourceName = 'HDFC';
-            $sourceType = 'ACCOUNT';
+            $sourceName = 'HDFC'; $sourceType = 'ACCOUNT';
         } elseif (str_contains($smsLower, 'bandhan')) {
-            $sourceName = 'Bandhan';
-            $sourceType = 'ACCOUNT';
+            $sourceName = 'Bandhan'; $sourceType = 'ACCOUNT';
         }
 
-        // 3. CREDIT YA DEBIT TYPE
-        $type = 'EXPENSE'; // Default debit / kharcha
-        if (str_contains($smsLower, 'credited') || str_contains($smsLower, 'received') || str_contains($smsLower, 'repayment')) {
+        // 3. CREDIT YA DEBIT TYPE (Fix: Har tarah ke Credit ko detect karega)
+        $type = 'EXPENSE'; 
+        if (preg_match('/(credit|received|repayment|added|deposit|refund)/i', $smsLower)) {
             $type = 'INCOME';
         }
 
-        // 4. DATABASE MEIN TRANSACTION SAVE KARNA AUR BALANCE UPDATE KARNA
+        // 🧠 4. AUTO-CATEGORIZER (Fix: 'Uncategorized' ki jagah smart category)
+        $category = 'Uncategorized';
+        if (preg_match('/(swiggy|zomato|kfc|mcdonalds|food|restaurant)/i', $smsLower)) {
+            $category = 'Food & Shopping'; 
+        } elseif (preg_match('/(amazon|flipkart|myntra|shopping)/i', $smsLower)) {
+            $category = 'Shopping';
+        } elseif (preg_match('/(uber|ola|rapido|irctc|ticket|travel)/i', $smsLower)) {
+            $category = 'Travel';
+        } elseif (preg_match('/(recharge|jio|airtel|vi|bill|electricity|emi)/i', $smsLower)) {
+            $category = 'Bills & Utilities';
+        }
+
+        // 5. DATABASE & BALANCE SYNC
         try {
             DB::beginTransaction();
 
-            // A. Transaction Save Karo (title hata diya kyunki humne DB se wo column shayad hata diya tha)
             $transaction = Transaction::create([
                 'amount'      => $amount,
                 'type'        => $type,
-                'category'    => 'Uncategorized',
+                'category'    => $category,
                 'source'      => $sourceName,
                 'source_type' => $sourceType,
                 'raw_sms'     => $sms,
+                'description' => 'Via Auto SMS', // Note column ke liye
                 'date'        => now(),
             ]);
 
-            // B. YAHAN HAI ASLI JADOO: Balance Update Logic jo missing tha!
+            // Balance Update (Fix for Credit sync)
             if ($sourceName !== 'Unknown') {
                 if ($sourceType === 'ACCOUNT') {
                     $account = Account::where('bank_name', $sourceName)->first();
                     if ($account) {
-                        if ($type === 'EXPENSE') {
+                        if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $account->decrement('current_balance', $amount);
                         } else {
-                            $account->increment('current_balance', $amount);
+                            $account->increment('current_balance', $amount); // INCOME yahan add hoga
                         }
                     }
                 } elseif ($sourceType === 'CREDIT_CARD') {
                     $card = CreditCard::where('card_name', $sourceName)->first();
                     if ($card) {
-                        if ($type === 'EXPENSE') {
+                        if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $card->decrement('available_limit', $amount);
                             $card->increment('unbilled_outstanding', $amount);
                         } else {
                             $card->increment('available_limit', $amount);
+                            $card->decrement('unbilled_outstanding', min($amount, $card->unbilled_outstanding));
                         }
                     }
                 }
             }
 
             DB::commit();
-
-            Log::info('✅ SUCCESS: Transaction Saved AND Balance Updated!', ['id' => $transaction->id, 'amount' => $amount, 'bank' => $sourceName]);
-
-            return response()->json([
-                'status'  => 'success',
-                'message' => 'Transaction saved and balance updated',
-                'data'    => $transaction
-            ]);
+            return response()->json(['status' => 'success', 'message' => 'Transaction saved', 'data' => $transaction]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('❌ Failed to save transaction: ' . $e->getMessage());
-
-            return response()->json([
-                'status'  => 'error',
-                'message' => 'Failed to save: ' . $e->getMessage()
-            ], 500);
+            Log::error('Failed to save transaction: ' . $e->getMessage());
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
     }
 }

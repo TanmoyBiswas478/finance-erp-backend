@@ -14,37 +14,44 @@ class DashboardController extends Controller
 {
     public function index()
     {
-        // 1. Saare bank accounts ka data fetch karo
         $accounts = Account::all();
-        
-        // 2. Saare credit cards ka data fetch karo
         $creditCards = CreditCard::all();
-        
-        // Date variables set kar lo
         $currentMonth = Carbon::now()->month;
         $currentYear = Carbon::now()->year;
         
-        // 3. Current month ke total expenses (FIXED: type = EXPENSE, aur date column)
-        $currentMonthExpense = Transaction::where('type', 'EXPENSE')
+        // Expenses
+        $currentMonthExpense = Transaction::whereIn('type', ['DEBIT', 'EXPENSE'])
             ->whereMonth('date', $currentMonth)
             ->whereYear('date', $currentYear)
             ->sum('amount');
             
-        // 4. Last 5 recent transactions
-        $recent_transactions = Transaction::orderBy('created_at', 'desc')->limit(5)->get();
+        // 🎯 NAYA: Income Total for Dashboard (Fix for Problem 2)
+        $currentMonthIncome = Transaction::whereIn('type', ['CREDIT', 'INCOME'])
+            ->whereMonth('date', $currentMonth)
+            ->whereYear('date', $currentYear)
+            ->sum('amount');
+            
+        // 🎯 NAYA: Recent Transactions Mapped Format (Fix for Problem 4 - Note & Type)
+        $recent_transactions = Transaction::orderBy('created_at', 'desc')->limit(5)->get()->map(function($t) {
+            return [
+                'id'       => $t->id,
+                'date'     => $t->date ?? $t->transaction_date,
+                'category' => $t->category ?? 'Uncategorized',
+                'note'     => $t->description ?? $t->raw_sms ?? '--', // Note me description dikhega
+                'type'     => $t->type ?? $t->transaction_type, // Type ab blank nahi rahega
+                'amount'   => $t->amount
+            ];
+        });
 
-        // 5. Current month ke expenses ko category ke hisaab se group karo (FIXED)
-        $category_expenses = Transaction::where('type', 'EXPENSE')
+        // Category Expenses
+        $category_expenses = Transaction::whereIn('type', ['DEBIT', 'EXPENSE'])
             ->whereMonth('date', $currentMonth)
             ->whereYear('date', $currentYear)
             ->selectRaw('category, SUM(amount) as total')
             ->groupBy('category')
             ->get();
 
-        // 6. Active EMIs fetch karo
         $active_emis = Emi::where('is_active', true)->get();
-
-        // 7. Budget vs Spend calculate karo
         $budgets = \App\Models\CategoryBudget::all();
         $budget_alerts = [];
 
@@ -56,15 +63,13 @@ class DashboardController extends Controller
                     break;
                 }
             }
-
             $percentage = $budget->budget_limit > 0 ? ($spent / $budget->budget_limit) * 100 : 0;
-            
             $budget_alerts[] = [
-                'category' => $budget->category_name,
-                'limit' => $budget->budget_limit,
-                'spent' => $spent,
+                'category'   => $budget->category_name,
+                'limit'      => $budget->budget_limit,
+                'spent'      => $spent,
                 'percentage' => min($percentage, 100),
-                'is_danger' => $percentage >= 90,
+                'is_danger'  => $percentage >= 90,
                 'is_warning' => $percentage >= 75 && $percentage < 90
             ];
         }
@@ -72,40 +77,35 @@ class DashboardController extends Controller
         return response()->json([
             'status' => 'success',
             'data' => [
-                'accounts' => $accounts,
-                'credit_cards' => $creditCards,
+                'accounts'              => $accounts,
+                'credit_cards'          => $creditCards,
                 'current_month_expense' => $currentMonthExpense,
-                'recent_transactions' => $recent_transactions,
-                'category_expenses' => $category_expenses,
-                'active_emis' => $active_emis,
-                'budget_alerts' => $budget_alerts 
+                'current_month_income'  => $currentMonthIncome, // Ab frontend Credit bhi dikhayega!
+                'recent_transactions'   => $recent_transactions,
+                'category_expenses'     => $category_expenses,
+                'active_emis'           => $active_emis,
+                'budget_alerts'         => $budget_alerts 
             ]
         ], 200);
     }
-
+    
+    // (Baaki purane generateStatement aur payEmi functions wese hi rakhna)
     public function generateStatement($id)
     {
         $card = CreditCard::findOrFail($id);
-        
         $card->billed_outstanding += $card->unbilled_outstanding;
         $card->unbilled_outstanding = 0;
         $card->save();
-
-        return response()->json([
-            'status' => 'success', 
-            'message' => 'Statement Generated Successfully!'
-        ]);
+        return response()->json(['status' => 'success', 'message' => 'Statement Generated Successfully!']);
     }
 
     public function payEmi($id)
     {
         $emi = \App\Models\Emi::findOrFail($id);
-        
         if($emi->paid_installments >= $emi->total_installments) {
             return response()->json(['status' => 'error', 'message' => 'EMI already fully paid']);
         }
 
-        // BANK/CARD KA NAAM NIKALNE KA LOGIC (Taaki source column mein naam jaye)
         $sourceName = 'Unknown';
         if ($emi->source_type === 'ACCOUNT') {
             $source = \App\Models\Account::find($emi->source_id);
@@ -122,20 +122,17 @@ class DashboardController extends Controller
             }
         }
 
-        // 1. Transaction create karo (FIXED COLUMNS)
         \App\Models\Transaction::create([
-            'date' => \Carbon\Carbon::now()->format('Y-m-d'),
-            'amount' => $emi->emi_amount,
-            'type' => 'EXPENSE',
-            'category' => 'EMI Payment',
+            'date'        => \Carbon\Carbon::now()->format('Y-m-d'),
+            'amount'      => $emi->emi_amount,
+            'type'        => 'EXPENSE',
+            'category'    => 'EMI Payment',
             'source_type' => $emi->source_type,
-            'source' => $sourceName, // source_id ki jagah source
+            'source'      => $sourceName,
             'description' => $emi->emi_name . ' - Installment ' . ($emi->paid_installments + 1),
         ]);
 
-        // 3. EMI ka progress update karo
         $emi->increment('paid_installments');
-        
         if($emi->paid_installments >= $emi->total_installments) {
             $emi->is_active = false;
         }
