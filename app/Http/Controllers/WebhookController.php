@@ -3,7 +3,10 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use App\Models\Transaction; // Tumhara transaction model
+use App\Models\Account;     // Tumhara account/card model
 
 class WebhookController extends Controller
 {
@@ -17,28 +20,32 @@ class WebhookController extends Controller
 
         $smsLower = strtolower($sms);
 
-        // 1. AMOUNT NIKALNE KA LOGIC
+        // 1. AMOUNT PARSE KARNA
         $amount = 0;
         if (preg_match('/(?:rs\.?|inr)\s*([\d,]+\.?\d*)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
 
-        // 2. SOURCE & TYPE PEHCHAN-NE KA LOGIC
-        $sourceName = 'Unknown';
-        $sourceType = 'ACCOUNT'; // Default account
+        if ($amount <= 0) {
+            return response()->json(['error' => 'Could not parse valid amount'], 422);
+        }
 
-        // --- Credit Cards ---
+        // 2. SOURCE & TYPE PEHCHANNA
+        $sourceName = 'Unknown';
+        $sourceType = 'ACCOUNT';
+
+        // Credit Cards
         if (str_contains($smsLower, 'slice')) {
             $sourceName = 'Slice CC';
             $sourceType = 'CREDIT_CARD';
         } elseif (str_contains($smsLower, 'supermoney') || str_contains($smsLower, 'utkarsh') || str_contains($smsLower, 'supercard')) {
             $sourceName = 'Utkarsh SuperMoney';
             $sourceType = 'CREDIT_CARD';
-        } elseif (str_contains($smsLower, 'bandhan') && str_contains($smsLower, 'card')) {
+        } elseif (str_contains($smsLower, 'bandhan') && (str_contains($smsLower, 'card') || str_contains($smsLower, 'credit'))) {
             $sourceName = 'Bandhan CC';
             $sourceType = 'CREDIT_CARD';
-        }
-        // --- Bank Accounts ---
+        } 
+        // Bank Accounts
         elseif (str_contains($smsLower, 'jupiter') || str_contains($smsLower, 'federal')) {
             $sourceName = 'Jupiter';
             $sourceType = 'ACCOUNT';
@@ -50,28 +57,44 @@ class WebhookController extends Controller
             $sourceType = 'ACCOUNT';
         }
 
-        // 3. CREDIT YA DEBIT CHECK
-        $type = 'DEBIT';
+        // 3. CREDIT YA DEBIT TYPE
+        $type = 'EXPENSE'; // Default debit / kharcha
         if (str_contains($smsLower, 'credited') || str_contains($smsLower, 'received') || str_contains($smsLower, 'repayment')) {
-            $type = 'CREDIT';
+            $type = 'INCOME';
         }
 
-        // 4. LOG MEIN PRINT KARNA (Check karne ke liye)
-        Log::info('New Transaction Detected:', [
-            'Source' => $sourceName,
-            'Type' => $sourceType,
-            'Amount' => $amount,
-            'Transaction_Type' => $type
-        ]);
+        // 4. DATABASE MEIN TRANSACTION SAVE KARNA
+        try {
+            DB::beginTransaction();
 
-        return response()->json([
-            'status' => 'success',
-            'data' => [
-                'source_name' => $sourceName,
+            $transaction = Transaction::create([
+                'title'       => 'Auto SMS: ' . $sourceName,
+                'amount'      => $amount,
+                'type'        => $type,
+                'category'    => 'Uncategorized',
+                'source'      => $sourceName,
                 'source_type' => $sourceType,
-                'amount' => $amount,
-                'type' => $type
-            ]
-        ]);
+                'raw_sms'     => $sms,
+                'date'        => now(),
+            ]);
+
+            DB::commit();
+
+            Log::info('Transaction Saved Successfully:', ['id' => $transaction->id, 'amount' => $amount]);
+
+            return response()->json([
+                'status'  => 'success',
+                'message' => 'Transaction saved to database',
+                'data'    => $transaction
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Failed to save transaction: ' . $e->getMessage());
+
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Failed to save: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }
