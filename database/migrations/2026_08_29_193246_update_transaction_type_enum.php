@@ -1,18 +1,19 @@
 <?php
 
 use Illuminate\Database\Migrations\Migration;
-use Illuminate\Support\Facades\DB; // Yeh import zaroori hai
+use Illuminate\Support\Facades\DB; 
 
 return new class extends Migration
 {
     public function up(): void
     {
-        // Database ko naye words sikhane ka raw SQL command
-        DB::statement("ALTER TABLE transactions MODIFY transaction_type ENUM('DEBIT', 'CREDIT', 'TRANSFER', 'CC_BILL') NOT NULL");
+        // Column ka naam 'type' kiya aur Macrodroid ke 'EXPENSE' ko bhi allow kar diya
+        DB::statement("ALTER TABLE transactions MODIFY type ENUM('DEBIT', 'CREDIT', 'TRANSFER', 'CC_BILL', 'EXPENSE', 'INCOME') NOT NULL");
     }
 
     public function down(): void
     {
-        DB::statement("ALTER TABLE transactions MODIFY transaction_type ENUM('DEBIT', 'CREDIT') NOT NULL");
+        // Yahan bhi 'type' kar diya
+        DB::statement("ALTER TABLE transactions MODIFY type VARCHAR(255) NOT NULL");
     }
 };
