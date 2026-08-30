@@ -12,25 +12,25 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        // Tumhara user dhoondho (pehla user ya tumhari email wala)
-        $user = User::first();
+        // Yahan apni wahi exact email daal jo tu login ke liye use karta hai
+        $user = User::where('email', 'teri_real_email@gmail.com')->first();
 
         if (!$user) {
-            // Agar koi user nahi hai, toh pehle ek dummy user bana lo
+            // Agar galti se user nahi mila, tabhi ye naya banayega
             $user = User::create([
                 'name' => 'Tanmoy',
-                'email' => 'tanmoybiswas478@gmail.com', // Apni wali email daal dena
+                'email' => 'teri_real_email@gmail.com',
                 'password' => bcrypt('password123')
             ]);
         }
 
-        // 1. Bank Accounts (user_id ke sath)
+        // 1. Bank Accounts
         Account::create(['user_id' => $user->id, 'bank_name' => 'Jupiter', 'account_role' => 'SAVINGS', 'current_balance' => 2368.00]);
         Account::create(['user_id' => $user->id, 'bank_name' => 'HDFC', 'account_role' => 'SAVINGS', 'current_balance' => 10000.00]);
         Account::create(['user_id' => $user->id, 'bank_name' => 'Bandhan', 'account_role' => 'SAVINGS', 'current_balance' => 4400.00]);
         Account::create(['user_id' => $user->id, 'bank_name' => 'Slice', 'account_role' => 'SAVINGS', 'current_balance' => 0.00]);
 
-        // 2. Credit Cards (user_id ke sath)
+        // 2. Credit Cards
         CreditCard::create([
             'user_id' => $user->id,
             'card_name' => 'Utkarsh SuperMoney',
@@ -59,7 +59,7 @@ class DatabaseSeeder extends Seeder
             'billing_date' => 20
         ]);
 
-        // 3. Budgets (user_id ke sath)
+        // 3. Budgets
         CategoryBudget::create(['user_id' => $user->id, 'category_name' => 'Food & Shopping', 'budget_limit' => 4000]);
         CategoryBudget::create(['user_id' => $user->id, 'category_name' => 'Travel', 'budget_limit' => 2000]);
         CategoryBudget::create(['user_id' => $user->id, 'category_name' => 'Shopping', 'budget_limit' => 1000]);
