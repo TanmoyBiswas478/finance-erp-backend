@@ -7,29 +7,31 @@ use Illuminate\Http\Request;
 use App\Models\Transaction;
 use App\Models\Account;
 use App\Models\CreditCard;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Log; // 🕵️‍♂️ Spy Log
 
 class TransactionController extends Controller
 {
     public function store(Request $request)
     {
-        // 1. DATA MAPPING (YAHI ASLI PROBLEM THI)
-        // Phone abhi bhi purane keys bhej rahe hain, hum unko naye columns mein map kar rahe hain
-        $type = strtoupper(trim($request->type ?? $request->transaction_type ?? ''));
-        $sourceNameOriginal = trim($request->source ?? $request->source_id ?? '');
-        $date = $request->date ?? $request->transaction_date ?? now();
+        // 🕵️‍♂️ Jasoos Code: Yeh exact data print karega jo phone ne bheja hai
+        Log::info('===== NAYA SMS AAYA =====');
+        Log::info('Phone ne yeh exact data bheja: ', $request->all());
+
+        // 1. DATA MAPPING (Extra keys add ki hain just in case)
+        $type = strtoupper(trim($request->type ?? $request->transaction_type ?? 'EXPENSE'));
+        $sourceNameOriginal = trim($request->source ?? $request->source_id ?? $request->bank ?? $request->account ?? '');
         $amount = (float) $request->amount;
         $sourceType = strtoupper(trim($request->source_type ?? 'ACCOUNT'));
 
-        // 2. Database mein sahi mapped data save karo
+        Log::info("Extract hua -> Type: {$type}, Bank Name: '{$sourceNameOriginal}', Amount: {$amount}");
+
+        // 2. Database save
         $transactionData = $request->all();
         $transactionData['type'] = $type;
         $transactionData['source'] = $sourceNameOriginal;
-        $transactionData['date'] = $date;
-        
         $transaction = Transaction::create($transactionData);
 
-        // 3. Aliases (Jiske multiple naam ho sakte hain)
+        // 3. Aliases
         $bankAliases = [
             'federal' => 'Jupiter',
             'jupiter' => 'Jupiter',
@@ -55,8 +57,9 @@ class TransactionController extends Controller
             $source = CreditCard::whereRaw('LOWER(card_name) = ?', [strtolower($resolvedName)])->first();
         }
 
-        // 5. Balance update karo (Ab 100% deduct hoga)
+        // 5. Balance update
         if ($source) {
+            Log::info("✅ Bank Mil Gaya! Puraana Balance: " . ($source->current_balance ?? $source->available_limit));
             if ($type === 'DEBIT' || $type === 'EXPENSE') { 
                 if ($sourceType === 'ACCOUNT') {
                     $source->decrement('current_balance', $amount);
@@ -65,37 +68,10 @@ class TransactionController extends Controller
                     $source->increment('unbilled_outstanding', $amount); 
                 }
             } 
-            elseif ($type === 'CREDIT' || $type === 'INCOME') {
-                if ($sourceType === 'ACCOUNT') {
-                    $source->increment('current_balance', $amount);
-                }
-            }
-            elseif ($type === 'TRANSFER' || $type === 'CC_BILL') {
-                $source->decrement('current_balance', $amount);
-
-                $targetType = strtoupper(trim($request->transfer_target_type ?? ''));
-                $targetId = $request->transfer_target_id; 
-
-                if ($targetType === 'ACCOUNT') {
-                    $target = Account::find($targetId);
-                    if ($target) {
-                        $target->increment('current_balance', $amount);
-                    }
-                } elseif ($targetType === 'CREDIT_CARD') {
-                    $target = CreditCard::find($targetId);
-                    if ($target) {
-                        $target->increment('available_limit', $amount);
-                        if ($target->billed_outstanding >= $amount) {
-                            $target->decrement('billed_outstanding', $amount);
-                        } else {
-                            $target->billed_outstanding = 0;
-                            $target->save();
-                        }
-                    }
-                }
-            }
+            Log::info("✅ Balance Deduct ho gaya!");
         } else {
-            Log::error("Bank nahi mila check karo: '" . $sourceNameOriginal . "'");
+            // ❌ Agar fail hua, toh yahan batayega kyun fail hua
+            Log::error("❌ ERROR: Bank DB mein nahi mila! Phone ne yeh naam bheja hai: '" . $sourceNameOriginal . "'");
         }
 
         return response()->json(['status' => 'success', 'data' => $transaction]);
