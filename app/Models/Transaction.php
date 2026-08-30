@@ -9,6 +9,6 @@ class Transaction extends Model
 {
     use HasFactory;
 
-    // Yeh line add karni hai (Iska matlab hai saare columns fillable hain)
+    // Saare columns fillable hain
     protected $guarded = []; 
 }
