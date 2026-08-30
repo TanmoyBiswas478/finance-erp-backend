@@ -7,71 +7,65 @@ use Illuminate\Http\Request;
 use App\Models\Transaction;
 use App\Models\Account;
 use App\Models\CreditCard;
-use Illuminate\Support\Facades\Log; // 🕵️‍♂️ Spy Log
+use Illuminate\Support\Facades\Log;
 
 class TransactionController extends Controller
 {
     public function store(Request $request)
     {
-        // 🕵️‍♂️ Jasoos Code: Yeh exact data print karega jo phone ne bheja hai
-        Log::info('===== NAYA SMS AAYA =====');
-        Log::info('Phone ne yeh exact data bheja: ', $request->all());
+        $rawSms = $request->raw_sms ?? '';
 
-        // 1. DATA MAPPING (Extra keys add ki hain just in case)
-        $type = strtoupper(trim($request->type ?? $request->transaction_type ?? 'EXPENSE'));
-        $sourceNameOriginal = trim($request->source ?? $request->source_id ?? $request->bank ?? $request->account ?? '');
-        $amount = (float) $request->amount;
-        $sourceType = strtoupper(trim($request->source_type ?? 'ACCOUNT'));
+        // Default values
+        $amount = 0;
+        $sourceName = 'Unknown';
+        $type = 'EXPENSE';
+        $sourceType = 'ACCOUNT';
 
-        Log::info("Extract hua -> Type: {$type}, Bank Name: '{$sourceNameOriginal}', Amount: {$amount}");
+        // 1. 🧠 SMS PARSING LOGIC (Asli Magic Yahan Hai)
+        if (!empty($rawSms)) {
+            // Amount nikalne ka logic (Check karega Rs. ya INR ke baad ka number)
+            if (preg_match('/(?:Rs\.?|INR)\s*([\d,]+\.?\d*)/i', $rawSms, $matches)) {
+                $amount = (float) str_replace(',', '', $matches[1]);
+            }
 
-        // 2. Database save
-        $transactionData = $request->all();
-        $transactionData['type'] = $type;
-        $transactionData['source'] = $sourceNameOriginal;
-        $transaction = Transaction::create($transactionData);
+            // Bank ka naam detect karne ka logic
+            $bankAliases = [
+                'federal' => 'Jupiter',
+                'jupiter' => 'Jupiter',
+                'hdfc'    => 'HDFC',
+                'bandhan' => 'Bandhan',
+                'slice'   => 'Slice'
+            ];
 
-        // 3. Aliases
-        $bankAliases = [
-            'federal' => 'Jupiter',
-            'jupiter' => 'Jupiter',
-            'hdfc'    => 'HDFC',
-            'bandhan' => 'Bandhan',
-            'slice'   => 'Slice'
-        ];
-
-        $cardAliases = [
-            'utkarsh'    => 'Utkarsh SuperMoney',
-            'supermoney' => 'Utkarsh SuperMoney',
-            'slice cc'   => 'Slice CC',
-            'bandhan cc' => 'Bandhan CC'
-        ];
-
-        // 4. Source find karo
-        $source = null;
-        if ($sourceType === 'ACCOUNT') {
-            $resolvedName = $bankAliases[strtolower($sourceNameOriginal)] ?? $sourceNameOriginal;
-            $source = Account::whereRaw('LOWER(bank_name) = ?', [strtolower($resolvedName)])->first();
-        } elseif ($sourceType === 'CREDIT_CARD') {
-            $resolvedName = $cardAliases[strtolower($sourceNameOriginal)] ?? $sourceNameOriginal;
-            $source = CreditCard::whereRaw('LOWER(card_name) = ?', [strtolower($resolvedName)])->first();
+            foreach ($bankAliases as $keyword => $realName) {
+                // Agar SMS ke andar keyword mil gaya, toh bank ka naam set kar do
+                if (stripos($rawSms, $keyword) !== false) {
+                    $sourceName = $realName;
+                    break;
+                }
+            }
         }
 
-        // 5. Balance update
-        if ($source) {
-            Log::info("✅ Bank Mil Gaya! Puraana Balance: " . ($source->current_balance ?? $source->available_limit));
-            if ($type === 'DEBIT' || $type === 'EXPENSE') { 
-                if ($sourceType === 'ACCOUNT') {
-                    $source->decrement('current_balance', $amount);
-                } elseif ($sourceType === 'CREDIT_CARD') {
-                    $source->decrement('available_limit', $amount);
-                    $source->increment('unbilled_outstanding', $amount); 
-                }
-            } 
-            Log::info("✅ Balance Deduct ho gaya!");
-        } else {
-            // ❌ Agar fail hua, toh yahan batayega kyun fail hua
-            Log::error("❌ ERROR: Bank DB mein nahi mila! Phone ne yeh naam bheja hai: '" . $sourceNameOriginal . "'");
+        // 2. Database mein transaction save karo
+        $transaction = Transaction::create([
+            'raw_sms' => $rawSms,
+            'amount' => $amount,
+            'type' => $type,
+            'category' => 'Uncategorized',
+            'source' => $sourceName,
+            'source_type' => $sourceType,
+            'date' => now()
+        ]);
+
+        // 3. Balance Update Logic
+        if ($sourceName !== 'Unknown' && $amount > 0) {
+            $source = Account::where('bank_name', $sourceName)->first();
+            if ($source) {
+                $source->decrement('current_balance', $amount);
+                Log::info("✅ SUCCESS: {$sourceName} se ₹{$amount} deduct ho gaye!");
+            } else {
+                Log::error("❌ ERROR: {$sourceName} DB mein nahi mila.");
+            }
         }
 
         return response()->json(['status' => 'success', 'data' => $transaction]);
