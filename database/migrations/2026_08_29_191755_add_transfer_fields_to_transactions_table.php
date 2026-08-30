@@ -9,7 +9,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('transactions', function (Blueprint $table) {
-            $table->string('transfer_target_type')->nullable()->after('source_id'); 
+            $table->string('transfer_target_type')->nullable()->after('source'); 
             $table->unsignedBigInteger('transfer_target_id')->nullable()->after('transfer_target_type');
         });
     }
