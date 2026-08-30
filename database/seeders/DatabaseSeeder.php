@@ -13,13 +13,13 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         // Yahan apni wahi exact email daal jo tu login ke liye use karta hai
-        $user = User::where('email', 'teri_real_email@gmail.com')->first();
+        $user = User::where('email', 'tanmoybiswas478@gmail.com')->first();
 
         if (!$user) {
             // Agar galti se user nahi mila, tabhi ye naya banayega
             $user = User::create([
                 'name' => 'Tanmoy',
-                'email' => 'teri_real_email@gmail.com',
+                'email' => 'tanmoybiswas478@gmail.com',
                 'password' => bcrypt('password123')
             ]);
         }
