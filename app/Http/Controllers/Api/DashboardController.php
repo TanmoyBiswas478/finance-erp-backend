@@ -8,9 +8,9 @@ use App\Models\Account;
 use App\Models\CreditCard;
 use App\Models\Transaction;
 use App\Models\Emi;
-use App\Models\CategoryBudget; // Ise import kiya
+use App\Models\CategoryBudget;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Auth; // NAYA IMPORT: Auth ke liye
+use Illuminate\Support\Facades\Auth;
 
 class DashboardController extends Controller
 {
@@ -46,12 +46,15 @@ class DashboardController extends Controller
             ->get()
             ->map(function($t) {
                 return [
-                    'id'       => $t->id,
-                    'date'     => $t->date ?? $t->transaction_date,
-                    'category' => $t->category ?? 'Uncategorized',
-                    'note'     => $t->description ?? $t->raw_sms ?? '--',
-                    'type'     => $t->type ?? $t->transaction_type,
-                    'amount'   => $t->amount
+                    'id'          => $t->id,
+                    'date'        => $t->date ?? $t->transaction_date,
+                    'category'    => $t->category ?? 'Uncategorized',
+                    'note'        => $t->description ?? $t->raw_sms ?? '--',
+                    'type'        => $t->type ?? $t->transaction_type,
+                    'amount'      => $t->amount,
+                    // 🎯 FIX: Frontend Edit Modal ko ye dono fields chahiye
+                    'source_type' => $t->source_type ?? 'ACCOUNT',
+                    'source_name' => $t->source ?? 'Unknown'
                 ];
             });
 
@@ -105,7 +108,6 @@ class DashboardController extends Controller
     
     public function generateStatement($id)
     {
-        // 🔒 Security: Check karo ki card is user ka hi ho
         $card = CreditCard::where('user_id', Auth::id())->findOrFail($id);
         $card->billed_outstanding += $card->unbilled_outstanding;
         $card->unbilled_outstanding = 0;
@@ -115,7 +117,6 @@ class DashboardController extends Controller
 
     public function payEmi($id)
     {
-        // 🔒 Security: Check karo ki EMI is user ki hi ho
         $emi = Emi::where('user_id', Auth::id())->findOrFail($id);
         if($emi->paid_installments >= $emi->total_installments) {
             return response()->json(['status' => 'error', 'message' => 'EMI already fully paid']);
@@ -137,7 +138,6 @@ class DashboardController extends Controller
             }
         }
 
-        // 🔒 EMI payment ka transaction bhi is user ke naam pe save hoga
         Transaction::create([
             'user_id'     => Auth::id(),
             'date'        => \Carbon\Carbon::now()->format('Y-m-d'),
@@ -157,13 +157,13 @@ class DashboardController extends Controller
 
         return response()->json(['status' => 'success', 'message' => 'EMI Paid Successfully!']);
     }
+
     // ==========================================
     // ACCOUNTS MANUAL CRUD (Update & Delete)
     // ==========================================
 
     public function updateAccount(Request $request, $id)
     {
-        // Security: Ensure account belongs to the logged-in user
         $account = Account::where('user_id', Auth::id())->findOrFail($id);
         
         $request->validate([
@@ -198,7 +198,6 @@ class DashboardController extends Controller
 
     public function updateCreditCard(Request $request, $id)
     {
-        // Security: Ensure card belongs to the logged-in user
         $card = CreditCard::where('user_id', Auth::id())->findOrFail($id);
 
         $request->validate([
@@ -229,5 +228,4 @@ class DashboardController extends Controller
             'message' => 'Credit card deleted successfully'
         ]);
     }
-
 }
