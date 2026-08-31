@@ -26,10 +26,10 @@ class WebhookController extends Controller
         $userId = $user->id; 
         $smsLower = strtolower($sms);
 
-        // 🧠 1. STATEMENT GENERATION DETECTION
+        // 🧠 1. STATEMENT GENERATION DETECTION (Smart Auto-Billed Shift)
         $isStatement = preg_match('/(statement is ready|statement for your.*total due)/i', $smsLower);
 
-        // 2. AMOUNT PARSE (Fixed: Added 'deposited' for Income)
+        // 2. AMOUNT PARSE (Added 'deposited', 'payment of', 'pay' for Income & CC bills)
         $amount = 0;
         if (preg_match('/(?:rs\.?|inr|₹|amount|debited|credited|deposited|received|paid|spent|sent|payment of|pay)\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
@@ -45,7 +45,7 @@ class WebhookController extends Controller
             return response()->json(['error' => 'Could not parse valid amount'], 422);
         }
 
-        // 🎯 3. OPTIMIZED SOURCE PEHCHANNA
+        // 🎯 3. OPTIMIZED SOURCE PEHCHANNA (Sender IDs: UTKSPR, BDNSMS)
         $sourceName = 'Unknown';
         $sourceType = 'ACCOUNT';
 
@@ -113,9 +113,8 @@ class WebhookController extends Controller
             }
         }
 
-        // 4. CREDIT YA DEBIT TYPE (Fixed: Added deposited)
+        // 4. CREDIT YA DEBIT TYPE
         $type = 'UNKNOWN'; 
-        
         if (preg_match('/(received your payment|payment of.*credited|payment of.*received)/i', $smsLower)) {
             $type = 'INCOME';
         } elseif (preg_match('/\b(debited|spent|paid|withdrawn|sent)\b/i', $smsLower)) {
@@ -154,7 +153,7 @@ class WebhookController extends Controller
             }
         }
 
-        // 🛑 5.5 ANTI-SPAM (Fixed: Added Amount matching & Reduced time to 15s)
+        // 🛑 5.5 ANTI-SPAM
         if ($sourceName !== 'Unknown' && $amount > 0) {
             $refId = null;
             if (preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $sms, $refMatches)) {
@@ -162,9 +161,9 @@ class WebhookController extends Controller
             }
 
             $exactDuplicate = Transaction::where('user_id', $userId)
-                ->where('amount', $amount) // Matching exact amount for safety
+                ->where('amount', $amount)
                 ->where('raw_sms', $sms)
-                ->where('created_at', '>=', now()->subSeconds(15)) // Relaxed to 15s for rapid testing
+                ->where('created_at', '>=', now()->subSeconds(15))
                 ->first();
 
             if ($exactDuplicate) {
@@ -220,6 +219,7 @@ class WebhookController extends Controller
                             $card->decrement('available_limit', $amount);
                             $card->increment('unbilled_outstanding', $amount);
                         } else {
+                            // 🌊 THE WATERFALL PAYMENT LOGIC 
                             $card->increment('available_limit', $amount);
                             $remaining = $amount;
                             
@@ -228,6 +228,7 @@ class WebhookController extends Controller
                                 $card->decrement('billed_outstanding', $deduct);
                                 $remaining -= $deduct;
                             }
+                            
                             if ($remaining > 0) {
                                 $card->decrement('unbilled_outstanding', min($remaining, $card->unbilled_outstanding));
                             }

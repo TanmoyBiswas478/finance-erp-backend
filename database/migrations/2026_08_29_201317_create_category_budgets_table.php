@@ -10,9 +10,16 @@ return new class extends Migration
     {
         Schema::create('category_budgets', function (Blueprint $table) {
             $table->id();
-            $table->string('category_name')->unique(); // Kis category ka budget hai
-            $table->decimal('budget_limit', 10, 2); // Maximum limit
+            
+            // 🎯 FIXED: Direct User ID link
+            $table->foreignId('user_id')->constrained('users')->onDelete('cascade');
+            
+            $table->string('category_name'); 
+            $table->decimal('budget_limit', 10, 2); 
             $table->timestamps();
+            
+            // Ek user ek category ka ek hi budget bana sake
+            $table->unique(['user_id', 'category_name']);
         });
     }
 

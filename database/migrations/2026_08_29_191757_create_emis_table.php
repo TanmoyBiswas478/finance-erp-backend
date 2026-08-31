@@ -10,6 +10,10 @@ return new class extends Migration
     {
         Schema::create('emis', function (Blueprint $table) {
             $table->id();
+            
+            // 🎯 FIXED: Direct User ID link
+            $table->foreignId('user_id')->constrained('users')->onDelete('cascade');
+            
             $table->string('emi_name'); 
             $table->decimal('emi_amount', 10, 2);
             $table->string('source_type'); 
