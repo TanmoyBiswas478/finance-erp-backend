@@ -11,71 +11,68 @@ use Illuminate\Support\Facades\Log;
 
 class AutomationController extends Controller
 {
-    // Yeh API endpoint phone se data receive karega
+    // Yeh API endpoint phone se data receive karega directly
     public function handleSmsWebhook(Request $request)
     {
-        // 1. Phone se aaya hua data validate karo
         $request->validate([
-            'source_name' => 'required|string', // e.g., 'HDFC', 'Jupiter', 'SuperMoney'
-            'source_type' => 'required|string', // 'ACCOUNT' ya 'CREDIT_CARD'
+            'source_name' => 'required|string', 
+            'source_type' => 'required|string', 
             'amount' => 'required|numeric',
-            'type' => 'required|string', // 'DEBIT' ya 'CREDIT'
+            'type' => 'required|string',
             'description' => 'nullable|string'
         ]);
 
         $amount = $request->amount;
-        $type = strtoupper($request->type); // DEBIT/CREDIT
+        $type = in_array(strtoupper($request->type), ['DEBIT', 'EXPENSE']) ? 'EXPENSE' : 'INCOME';
         $sourceType = strtoupper($request->source_type);
 
-        // Security ke liye log save karo (taaki debug kar sakein)
         Log::info("Webhook Received: ", $request->all());
 
         try {
-            // ==========================================
-            // BANK ACCOUNT AUTOMATION LOGIC
-            // ==========================================
             if ($sourceType === 'ACCOUNT') {
                 $account = Account::where('bank_name', 'LIKE', '%' . $request->source_name . '%')->first();
                 
                 if (!$account) return response()->json(['error' => 'Account not found'], 404);
 
-                if ($type === 'DEBIT') {
-                    $account->current_balance -= $amount;
+                if ($type === 'EXPENSE') {
+                    $account->decrement('current_balance', $amount);
                 } else {
-                    $account->current_balance += $amount;
+                    $account->increment('current_balance', $amount);
                 }
-                $account->save();
 
-                // Transaction Entry
                 Transaction::create([
-                    'category' => 'Automated Expense', // Default category
+                    'category' => 'Automated Expense', 
                     'amount' => $amount,
                     'transaction_date' => now()->toDateString(),
                     'transaction_type' => $type,
                     'source_type' => 'ACCOUNT',
                     'source_id' => $account->id,
-                    'description' => $request->description ?? 'Auto-synced via SMS'
+                    'description' => $request->description ?? 'Auto-synced via explicit API'
                 ]);
             } 
             
-            // ==========================================
-            // CREDIT CARD AUTOMATION LOGIC
-            // ==========================================
             else if ($sourceType === 'CREDIT_CARD') {
                 $card = CreditCard::where('card_name', 'LIKE', '%' . $request->source_name . '%')->first();
                 
                 if (!$card) return response()->json(['error' => 'Card not found'], 404);
 
-                if ($type === 'DEBIT') { // Matlab card pe kharcha hua hai
-                    $card->available_limit -= $amount;
-                    $card->unbilled_outstanding += $amount;
-                } else { // Refund aaya hai
-                    $card->available_limit += $amount;
-                    $card->unbilled_outstanding -= $amount;
+                if ($type === 'EXPENSE') { 
+                    $card->decrement('available_limit', $amount);
+                    $card->increment('unbilled_outstanding', $amount);
+                } else { 
+                    // Waterfall Logic
+                    $card->increment('available_limit', $amount);
+                    $remaining = $amount;
+                    if ($card->billed_outstanding > 0) {
+                        $deduct = min($remaining, $card->billed_outstanding);
+                        $card->decrement('billed_outstanding', $deduct);
+                        $remaining -= $deduct;
+                    }
+                    if ($remaining > 0) {
+                        $card->decrement('unbilled_outstanding', min($remaining, $card->unbilled_outstanding));
+                    }
                 }
-                $card->save();
 
-                // Transaction Entry
                 Transaction::create([
                     'category' => 'Automated Expense',
                     'amount' => $amount,
@@ -83,7 +80,7 @@ class AutomationController extends Controller
                     'transaction_type' => $type,
                     'source_type' => 'CREDIT_CARD',
                     'source_id' => $card->id,
-                    'description' => $request->description ?? 'Auto-synced via SMS'
+                    'description' => $request->description ?? 'Auto-synced via explicit API'
                 ]);
             }
 

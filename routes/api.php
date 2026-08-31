@@ -10,7 +10,7 @@ use App\Http\Controllers\WebhookController;
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
-// Isme middleware nahi lagayenge varna MacroDroid/Zapier se request block ho jayegi
+// Isme middleware nahi lagayenge varna MacroDroid/Zapier/Shortcuts se request block ho jayegi
 Route::post('/webhook/transaction', [WebhookController::class, 'handleSms']);
 
 
