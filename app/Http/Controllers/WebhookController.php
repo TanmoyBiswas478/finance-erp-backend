@@ -60,7 +60,6 @@ class WebhookController extends Controller
         } elseif (preg_match('/(supermoney|utkarsh|supercard)/i', $smsLower)) {
             $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
         } elseif (str_contains($smsLower, 'bandhan') && preg_match('/\b(credit|card|cc)\b/i', $smsLower) && !str_contains($smsLower, 'debit')) {
-            // 🎯 FIX: \b (word boundary) ensure karega ki "credited" word pass na ho, sirf "credit", "card", ya "cc" trigger ho
             $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
         } elseif (preg_match('/(jupiter|federal)/i', $smsLower)) {
             $sourceName = 'Jupiter'; $sourceType = 'ACCOUNT';
@@ -102,7 +101,7 @@ class WebhookController extends Controller
             }
         }
 
-        // 🛑 4.5 THE MERGE & UPGRADE SHIELD (Multi-User Secured)
+        // 🛑 4.5 THE MERGE & UPGRADE SHIELD 
         if ($sourceName !== 'Unknown' && $amount > 0) {
             
             $refId = null;
@@ -110,6 +109,7 @@ class WebhookController extends Controller
                 $refId = $refMatches[1];
             }
 
+            // Anti-Spam: 30 seconds block
             $exactDuplicate = Transaction::where('user_id', $userId)
                 ->where('raw_sms', $sms)
                 ->where('created_at', '>=', now()->subSeconds(30))
@@ -126,33 +126,12 @@ class WebhookController extends Controller
                     ->exists();
                     
                 if ($utrDuplicate) {
-                    Log::info("🛑 UTR DUPLICATE BLOCKED: ₹{$amount} for {$sourceName}.");
                     return response()->json(['status' => 'success', 'message' => 'UTR already processed']);
-                }
-            }
-
-            if ($refId) {
-                $recentTransactions = Transaction::where('user_id', $userId)
-                    ->where('amount', $amount)
-                    ->where('source', $sourceName)
-                    ->where('type', $type)
-                    ->where('created_at', '>=', now()->subMinutes(3))
-                    ->orderBy('created_at', 'desc')
-                    ->get();
-                    
-                foreach ($recentTransactions as $oldTxn) {
-                    if (!preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $oldTxn->raw_sms)) {
-                        $oldTxn->raw_sms = $sms . ' [Merged Notif]';
-                        $oldTxn->save();
-                        
-                        Log::info("✅ UPGRADED: App Notification merged with SMS/Email UTR for ₹{$amount}");
-                        return response()->json(['status' => 'success', 'message' => 'Merged App Notif with SMS']);
-                    }
                 }
             }
         }
 
-        // 5. DATABASE & BALANCE SYNC (Multi-User)
+        // 5. DATABASE & BALANCE SYNC 
         try {
             DB::beginTransaction();
 
@@ -170,16 +149,22 @@ class WebhookController extends Controller
 
             if ($sourceName !== 'Unknown') {
                 if ($sourceType === 'ACCOUNT') {
-                    $account = Account::where('user_id', $userId)->where('bank_name', $sourceName)->first();
+                    // 🎯 FIX: 'LIKE' use kiya taaki HDFC Bank ya Bandhan A/C bhi match ho jaye
+                    $account = Account::where('user_id', $userId)->where('bank_name', 'LIKE', '%' . $sourceName . '%')->first();
+                    
                     if ($account) {
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $account->decrement('current_balance', $amount);
                         } else {
                             $account->increment('current_balance', $amount); 
                         }
+                    } else {
+                        Log::warning("Account not found for name: " . $sourceName);
                     }
                 } elseif ($sourceType === 'CREDIT_CARD') {
-                    $card = CreditCard::where('user_id', $userId)->where('card_name', $sourceName)->first();
+                    // 🎯 FIX: 'LIKE' use kiya for Credit Cards
+                    $card = CreditCard::where('user_id', $userId)->where('card_name', 'LIKE', '%' . $sourceName . '%')->first();
+                    
                     if ($card) {
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $card->decrement('available_limit', $amount);
@@ -188,6 +173,8 @@ class WebhookController extends Controller
                             $card->increment('available_limit', $amount);
                             $card->decrement('unbilled_outstanding', min($amount, $card->unbilled_outstanding));
                         }
+                    } else {
+                        Log::warning("Card not found for name: " . $sourceName);
                     }
                 }
             }
