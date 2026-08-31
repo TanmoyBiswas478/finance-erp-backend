@@ -8,14 +8,14 @@ use Illuminate\Support\Facades\Log;
 use App\Models\Transaction; 
 use App\Models\Account;      
 use App\Models\CreditCard;
-use App\Models\User; // NAYA IMPORT: User Model ke liye
+use App\Models\User; 
 
 class WebhookController extends Controller
 {
     public function handleSms(Request $request)
     {
         $sms = $request->input('raw_sms');
-        $userEmail = $request->input('user_email'); // NAYA: MacroDroid se email aayega
+        $userEmail = $request->input('user_email'); 
 
         if (!$sms) {
             return response()->json(['error' => 'No SMS received'], 400);
@@ -25,14 +25,13 @@ class WebhookController extends Controller
             return response()->json(['error' => 'User Email missing in webhook'], 400);
         }
 
-        // Email se User dhundho
         $user = User::where('email', $userEmail)->first();
         
         if (!$user) {
             return response()->json(['error' => 'User not found in ERP'], 404);
         }
 
-        $userId = $user->id; // Is ID ko hum har jagah use karenge
+        $userId = $user->id; 
         $smsLower = strtolower($sms);
 
         // 1. AMOUNT PARSE KARNA 
@@ -60,7 +59,8 @@ class WebhookController extends Controller
             $sourceName = 'Slice CC'; $sourceType = 'CREDIT_CARD';
         } elseif (preg_match('/(supermoney|utkarsh|supercard)/i', $smsLower)) {
             $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
-        } elseif (str_contains($smsLower, 'bandhan') && preg_match('/(credit|card)/i', $smsLower) && !str_contains($smsLower, 'debit')) {
+        } elseif (str_contains($smsLower, 'bandhan') && preg_match('/\b(credit|card|cc)\b/i', $smsLower) && !str_contains($smsLower, 'debit')) {
+            // 🎯 FIX: \b (word boundary) ensure karega ki "credited" word pass na ho, sirf "credit", "card", ya "cc" trigger ho
             $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
         } elseif (preg_match('/(jupiter|federal)/i', $smsLower)) {
             $sourceName = 'Jupiter'; $sourceType = 'ACCOUNT';
@@ -110,7 +110,6 @@ class WebhookController extends Controller
                 $refId = $refMatches[1];
             }
 
-            // Sirf is User ki history check karo duplicate ke liye
             $exactDuplicate = Transaction::where('user_id', $userId)
                 ->where('raw_sms', $sms)
                 ->where('created_at', '>=', now()->subSeconds(30))
@@ -158,7 +157,7 @@ class WebhookController extends Controller
             DB::beginTransaction();
 
             $transaction = Transaction::create([
-                'user_id'     => $userId, // NAYA: User ID save ho rahi hai
+                'user_id'     => $userId,
                 'amount'      => $amount,
                 'type'        => $type,
                 'category'    => $category,
@@ -171,7 +170,6 @@ class WebhookController extends Controller
 
             if ($sourceName !== 'Unknown') {
                 if ($sourceType === 'ACCOUNT') {
-                    // NAYA: Sirf is User ka bank account update karo
                     $account = Account::where('user_id', $userId)->where('bank_name', $sourceName)->first();
                     if ($account) {
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
@@ -181,7 +179,6 @@ class WebhookController extends Controller
                         }
                     }
                 } elseif ($sourceType === 'CREDIT_CARD') {
-                    // NAYA: Sirf is User ka Credit Card update karo
                     $card = CreditCard::where('user_id', $userId)->where('card_name', $sourceName)->first();
                     if ($card) {
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
