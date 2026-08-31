@@ -27,7 +27,7 @@ class DatabaseSeeder extends Seeder
         // 1. Bank Accounts
         Account::create(['user_id' => $user->id, 'bank_name' => 'Jupiter', 'account_role' => 'SAVINGS', 'current_balance' => 2428.42]);
         Account::create(['user_id' => $user->id, 'bank_name' => 'HDFC', 'account_role' => 'SAVINGS', 'current_balance' => 10000.00]);
-        Account::create(['user_id' => $user->id, 'bank_name' => 'Bandhan', 'account_role' => 'SAVINGS', 'current_balance' => 4391.00]);
+        Account::create(['user_id' => $user->id, 'bank_name' => 'Bandhan', 'account_role' => 'SAVINGS', 'current_balance' => 4391.19]);
         Account::create(['user_id' => $user->id, 'bank_name' => 'Slice', 'account_role' => 'SAVINGS', 'current_balance' => 1.00]);
 
         // 2. Credit Cards
