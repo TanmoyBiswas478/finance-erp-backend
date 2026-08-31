@@ -18,8 +18,10 @@ class DashboardController extends Controller
     {
         $userId = Auth::id(); // Security: Current logged-in user ki ID
         
-        $currentMonth = Carbon::now()->month;
-        $currentYear = Carbon::now()->year;
+        // 🎯 FIX 1: Timezone issue resolved taaki month calculations IST ke hisaab se perfect chalein
+        $now = Carbon::now('Asia/Kolkata');
+        $currentMonth = $now->month;
+        $currentYear = $now->year;
         
         // 1. Sirf is user ke Accounts aur Cards
         $accounts = Account::where('user_id', $userId)->get();
@@ -41,6 +43,7 @@ class DashboardController extends Controller
             
         // 4. Recent Transactions (Sirf is user ke)
         $recent_transactions = Transaction::where('user_id', $userId)
+            ->orderBy('date', 'desc') // Ensure true chronological order
             ->orderBy('created_at', 'desc')
             ->limit(15)
             ->get()
@@ -52,7 +55,6 @@ class DashboardController extends Controller
                     'note'        => $t->description ?? $t->raw_sms ?? '--',
                     'type'        => $t->type ?? $t->transaction_type,
                     'amount'      => $t->amount,
-                    // 🎯 FIX: Frontend Edit Modal ko ye dono fields chahiye
                     'source_type' => $t->source_type ?? 'ACCOUNT',
                     'source_name' => $t->source ?? 'Unknown'
                 ];
@@ -140,7 +142,7 @@ class DashboardController extends Controller
 
         Transaction::create([
             'user_id'     => Auth::id(),
-            'date'        => \Carbon\Carbon::now()->format('Y-m-d'),
+            'date'        => Carbon::now('Asia/Kolkata')->format('Y-m-d'),
             'amount'      => $emi->emi_amount,
             'type'        => 'EXPENSE',
             'category'    => 'EMI Payment',
@@ -166,13 +168,18 @@ class DashboardController extends Controller
     {
         $account = Account::where('user_id', Auth::id())->findOrFail($id);
         
-        $request->validate([
+        // 🎯 FIX 2: Fields ko nullable kiya taaki agar frontend se kuch miss ho toh fail na ho
+        $validatedData = $request->validate([
             'bank_name' => 'required|string',
-            'account_role' => 'required|string',
+            'account_role' => 'nullable|string',
             'current_balance' => 'required|numeric'
         ]);
 
-        $account->update($request->only(['bank_name', 'account_role', 'current_balance']));
+        $account->update([
+            'bank_name' => $validatedData['bank_name'],
+            'account_role' => $validatedData['account_role'] ?? $account->account_role,
+            'current_balance' => $validatedData['current_balance']
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -200,16 +207,25 @@ class DashboardController extends Controller
     {
         $card = CreditCard::where('user_id', Auth::id())->findOrFail($id);
 
-        $request->validate([
+        // 🎯 FIX 3: Strict validation relaxed. Sirf frontend se aane wale data ko enforce kiya
+        $validatedData = $request->validate([
             'card_name' => 'required|string',
-            'total_limit' => 'required|numeric',
             'available_limit' => 'required|numeric',
-            'billed_outstanding' => 'required|numeric',
-            'unbilled_outstanding' => 'required|numeric',
-            'billing_date' => 'required|integer'
+            'total_limit' => 'nullable|numeric',
+            'billed_outstanding' => 'nullable|numeric',
+            'unbilled_outstanding' => 'nullable|numeric',
+            'billing_date' => 'nullable|integer'
         ]);
 
-        $card->update($request->all());
+        // 🎯 FIX 4: Removed $request->all() for security. Safe explicit updating:
+        $card->update([
+            'card_name' => $validatedData['card_name'],
+            'available_limit' => $validatedData['available_limit'],
+            'total_limit' => $validatedData['total_limit'] ?? $card->total_limit,
+            'billed_outstanding' => $validatedData['billed_outstanding'] ?? $card->billed_outstanding,
+            'unbilled_outstanding' => $validatedData['unbilled_outstanding'] ?? $card->unbilled_outstanding,
+            'billing_date' => $validatedData['billing_date'] ?? $card->billing_date
+        ]);
 
         return response()->json([
             'status' => 'success',

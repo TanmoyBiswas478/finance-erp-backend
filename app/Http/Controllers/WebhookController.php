@@ -60,8 +60,8 @@ class WebhookController extends Controller
         } elseif (preg_match('/(supermoney|utkarsh|supercard)/i', $smsLower)) {
             $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
         } 
-        // 🎯 FIX: Sirf "credit card" ya "cc" check karein, "debit" word ko filter out na karein
-        elseif (str_contains($smsLower, 'bandhan') && preg_match('/\b(credit\s*card|cc)\b/i', $smsLower)) {
+        // 🎯 FIX: 'credit\s*card' hata kar 'credit|card' kar diya. Ab sirf "credit" aane par bhi properly detect hoga!
+        elseif (str_contains($smsLower, 'bandhan') && preg_match('/\b(credit|card|cc)\b/i', $smsLower)) {
             $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
         } elseif (preg_match('/(jupiter|federal)/i', $smsLower)) {
             $sourceName = 'Jupiter'; $sourceType = 'ACCOUNT';
@@ -74,20 +74,17 @@ class WebhookController extends Controller
         // 3. CREDIT YA DEBIT TYPE 
         $type = 'UNKNOWN'; 
         
-        // 🎯 FIX: Priority 1 - Agar sms mein definitely kharcha hua hai
         if (preg_match('/\b(debited|spent|paid|withdrawn)\b/i', $smsLower)) {
             $type = 'EXPENSE';
         } 
-        // 🎯 FIX: Priority 2 - Agar clearly paisa aaya hai
         elseif (preg_match('/\b(credited|received|repayment|added|deposit|refund)\b/i', $smsLower)) {
             $type = 'INCOME';
         }
-        // 🎯 FIX: Priority 3 - Agar sirf 'credit' likha hai par aage 'card' nahi hai tabhi income maane
         elseif (preg_match('/\bcredit\b/i', $smsLower) && !preg_match('/\bcredit\s*card\b/i', $smsLower)) {
             $type = 'INCOME';
         } 
         else {
-            $type = 'EXPENSE'; // Default
+            $type = 'EXPENSE'; 
         }
 
         // 🧠 4. THE SMART BRAIN (Auto-Categorizer)
