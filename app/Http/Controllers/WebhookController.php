@@ -59,7 +59,9 @@ class WebhookController extends Controller
             $sourceName = 'Slice CC'; $sourceType = 'CREDIT_CARD';
         } elseif (preg_match('/(supermoney|utkarsh|supercard)/i', $smsLower)) {
             $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
-        } elseif (str_contains($smsLower, 'bandhan') && preg_match('/\b(credit|card|cc)\b/i', $smsLower) && !str_contains($smsLower, 'debit')) {
+        } 
+        // 🎯 FIX: Sirf "credit card" ya "cc" check karein, "debit" word ko filter out na karein
+        elseif (str_contains($smsLower, 'bandhan') && preg_match('/\b(credit\s*card|cc)\b/i', $smsLower)) {
             $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
         } elseif (preg_match('/(jupiter|federal)/i', $smsLower)) {
             $sourceName = 'Jupiter'; $sourceType = 'ACCOUNT';
@@ -70,9 +72,22 @@ class WebhookController extends Controller
         }
 
         // 3. CREDIT YA DEBIT TYPE 
-        $type = 'EXPENSE'; 
-        if (preg_match('/(credit|received|repayment|added|deposit|refund)/i', $smsLower)) {
+        $type = 'UNKNOWN'; 
+        
+        // 🎯 FIX: Priority 1 - Agar sms mein definitely kharcha hua hai
+        if (preg_match('/\b(debited|spent|paid|withdrawn)\b/i', $smsLower)) {
+            $type = 'EXPENSE';
+        } 
+        // 🎯 FIX: Priority 2 - Agar clearly paisa aaya hai
+        elseif (preg_match('/\b(credited|received|repayment|added|deposit|refund)\b/i', $smsLower)) {
             $type = 'INCOME';
+        }
+        // 🎯 FIX: Priority 3 - Agar sirf 'credit' likha hai par aage 'card' nahi hai tabhi income maane
+        elseif (preg_match('/\bcredit\b/i', $smsLower) && !preg_match('/\bcredit\s*card\b/i', $smsLower)) {
+            $type = 'INCOME';
+        } 
+        else {
+            $type = 'EXPENSE'; // Default
         }
 
         // 🧠 4. THE SMART BRAIN (Auto-Categorizer)
@@ -149,7 +164,6 @@ class WebhookController extends Controller
 
             if ($sourceName !== 'Unknown') {
                 if ($sourceType === 'ACCOUNT') {
-                    // 🎯 FIX: 'LIKE' use kiya taaki HDFC Bank ya Bandhan A/C bhi match ho jaye
                     $account = Account::where('user_id', $userId)->where('bank_name', 'LIKE', '%' . $sourceName . '%')->first();
                     
                     if ($account) {
@@ -162,7 +176,6 @@ class WebhookController extends Controller
                         Log::warning("Account not found for name: " . $sourceName);
                     }
                 } elseif ($sourceType === 'CREDIT_CARD') {
-                    // 🎯 FIX: 'LIKE' use kiya for Credit Cards
                     $card = CreditCard::where('user_id', $userId)->where('card_name', 'LIKE', '%' . $sourceName . '%')->first();
                     
                     if ($card) {
