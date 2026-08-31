@@ -42,7 +42,7 @@ class DashboardController extends Controller
         // 4. Recent Transactions (Sirf is user ke)
         $recent_transactions = Transaction::where('user_id', $userId)
             ->orderBy('created_at', 'desc')
-            ->limit(5)
+            ->limit(15)
             ->get()
             ->map(function($t) {
                 return [
