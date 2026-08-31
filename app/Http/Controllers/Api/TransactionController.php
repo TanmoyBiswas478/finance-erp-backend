@@ -24,7 +24,7 @@ class TransactionController extends Controller
         return response()->json(['status' => 'success', 'data' => $transactions]);
     }
 
-    // 2. MANUAL ENTRY ADD KARNA 
+    // 2. MANUAL ENTRY ADD KARNA (With Waterfall Payment for Credit Cards)
     public function store(Request $request)
     {
         $request->validate([
@@ -68,8 +68,19 @@ class TransactionController extends Controller
                         $card->decrement('available_limit', $request->amount);
                         $card->increment('unbilled_outstanding', $request->amount);
                     } else {
+                        // 🌊 WATERFALL PAYMENT LOGIC FOR MANUAL PAYMENTS
                         $card->increment('available_limit', $request->amount);
-                        $card->decrement('unbilled_outstanding', min($request->amount, $card->unbilled_outstanding));
+                        $remaining = $request->amount;
+                        
+                        if ($card->billed_outstanding > 0) {
+                            $deduct = min($remaining, $card->billed_outstanding);
+                            $card->decrement('billed_outstanding', $deduct);
+                            $remaining -= $deduct;
+                        }
+                        
+                        if ($remaining > 0) {
+                            $card->decrement('unbilled_outstanding', min($remaining, $card->unbilled_outstanding));
+                        }
                     }
                 }
             }
@@ -83,7 +94,7 @@ class TransactionController extends Controller
         }
     }
 
-    // 3. 🎯 NAYA: TRANSACTION UPDATE / EDIT KARNA (With Balance Reversal & Re-application)
+    // 3. TRANSACTION UPDATE / EDIT KARNA (With Balance Reversal & Re-application)
     public function update(Request $request, int $id)
     {
         $request->validate([
@@ -117,6 +128,7 @@ class TransactionController extends Controller
                         $oldCard->increment('available_limit', $transaction->amount);
                         $oldCard->decrement('unbilled_outstanding', min($transaction->amount, $oldCard->unbilled_outstanding));
                     } else {
+                        // Reversal of payment: reduce limit, increase unbilled/billed back
                         $oldCard->decrement('available_limit', $transaction->amount);
                         $oldCard->increment('unbilled_outstanding', $transaction->amount);
                     }
@@ -146,8 +158,19 @@ class TransactionController extends Controller
                         $newCard->decrement('available_limit', $newAmount);
                         $newCard->increment('unbilled_outstanding', $newAmount);
                     } else {
+                        // 🌊 WATERFALL PAYMENT LOGIC
                         $newCard->increment('available_limit', $newAmount);
-                        $newCard->decrement('unbilled_outstanding', min($newAmount, $newCard->unbilled_outstanding));
+                        $remaining = $newAmount;
+                        
+                        if ($newCard->billed_outstanding > 0) {
+                            $deduct = min($remaining, $newCard->billed_outstanding);
+                            $newCard->decrement('billed_outstanding', $deduct);
+                            $remaining -= $deduct;
+                        }
+                        
+                        if ($remaining > 0) {
+                            $newCard->decrement('unbilled_outstanding', min($remaining, $newCard->unbilled_outstanding));
+                        }
                     }
                 }
             }

@@ -18,7 +18,7 @@ class DashboardController extends Controller
     {
         $userId = Auth::id(); // Security: Current logged-in user ki ID
         
-        // 🎯 FIX 1: Timezone issue resolved taaki month calculations IST ke hisaab se perfect chalein
+        // Timezone IST ke hisaab se set kiya
         $now = Carbon::now('Asia/Kolkata');
         $currentMonth = $now->month;
         $currentYear = $now->year;
@@ -27,23 +27,23 @@ class DashboardController extends Controller
         $accounts = Account::where('user_id', $userId)->get();
         $creditCards = CreditCard::where('user_id', $userId)->get();
         
-        // 2. Current Month Expense (Sirf is user ka)
+        // 2. Current Month Expense
         $currentMonthExpense = Transaction::where('user_id', $userId)
             ->whereIn('type', ['DEBIT', 'EXPENSE'])
             ->whereMonth('date', $currentMonth)
             ->whereYear('date', $currentYear)
             ->sum('amount');
             
-        // 3. Current Month Income (Sirf is user ki)
+        // 3. Current Month Income
         $currentMonthIncome = Transaction::where('user_id', $userId)
             ->whereIn('type', ['CREDIT', 'INCOME'])
             ->whereMonth('date', $currentMonth)
             ->whereYear('date', $currentYear)
             ->sum('amount');
             
-        // 4. Recent Transactions (Sirf is user ke)
+        // 4. Recent Transactions
         $recent_transactions = Transaction::where('user_id', $userId)
-            ->orderBy('date', 'desc') // Ensure true chronological order
+            ->orderBy('date', 'desc')
             ->orderBy('created_at', 'desc')
             ->limit(15)
             ->get()
@@ -60,7 +60,7 @@ class DashboardController extends Controller
                 ];
             });
 
-        // 5. Category Expenses (Sirf is user ke)
+        // 5. Category Expenses
         $category_expenses = Transaction::where('user_id', $userId)
             ->whereIn('type', ['DEBIT', 'EXPENSE'])
             ->whereMonth('date', $currentMonth)
@@ -69,7 +69,7 @@ class DashboardController extends Controller
             ->groupBy('category')
             ->get();
 
-        // 6. Active EMIs & Budgets (Sirf is user ke)
+        // 6. Active EMIs & Budgets
         $active_emis = Emi::where('user_id', $userId)->where('is_active', true)->get();
         $budgets = CategoryBudget::where('user_id', $userId)->get();
         $budget_alerts = [];
@@ -161,14 +161,13 @@ class DashboardController extends Controller
     }
 
     // ==========================================
-    // ACCOUNTS MANUAL CRUD (Update & Delete)
+    // ACCOUNTS MANUAL CRUD
     // ==========================================
 
     public function updateAccount(Request $request, $id)
     {
         $account = Account::where('user_id', Auth::id())->findOrFail($id);
         
-        // 🎯 FIX 2: Fields ko nullable kiya taaki agar frontend se kuch miss ho toh fail na ho
         $validatedData = $request->validate([
             'bank_name' => 'required|string',
             'account_role' => 'nullable|string',
@@ -200,14 +199,13 @@ class DashboardController extends Controller
     }
 
     // ==========================================
-    // CREDIT CARDS MANUAL CRUD (Update & Delete)
+    // CREDIT CARDS MANUAL CRUD
     // ==========================================
 
     public function updateCreditCard(Request $request, $id)
     {
         $card = CreditCard::where('user_id', Auth::id())->findOrFail($id);
 
-        // 🎯 FIX 3: Strict validation relaxed. Sirf frontend se aane wale data ko enforce kiya
         $validatedData = $request->validate([
             'card_name' => 'required|string',
             'available_limit' => 'required|numeric',
@@ -217,7 +215,6 @@ class DashboardController extends Controller
             'billing_date' => 'nullable|integer'
         ]);
 
-        // 🎯 FIX 4: Removed $request->all() for security. Safe explicit updating:
         $card->update([
             'card_name' => $validatedData['card_name'],
             'available_limit' => $validatedData['available_limit'],
