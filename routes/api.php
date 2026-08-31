@@ -17,15 +17,26 @@ Route::post('/webhook/transaction', [WebhookController::class, 'handleSms']);
 // 🔴 PROTECTED ROUTES (Sirf Login hone ke baad token ke sath chalenge)
 Route::middleware('auth:sanctum')->group(function () {
     
-    // Logout
+    // Auth & Logout
     Route::post('/logout', [AuthController::class, 'logout']);
     
-    // Dashboard & Actions
+    // Dashboard & EMI
     Route::get('/dashboard', [DashboardController::class, 'index']);
     Route::post('/credit-cards/{id}/generate-statement', [DashboardController::class, 'generateStatement']);
     Route::post('/emis/{id}/pay', [DashboardController::class, 'payEmi']);
     
-    // Manual Transactions Add karne ki route (Iska form hum aage UI mein banayenge)
+    // --- NAYE ROUTES: Accounts Manual CRUD ---
+    Route::put('/accounts/{id}', [DashboardController::class, 'updateAccount']);
+    Route::delete('/accounts/{id}', [DashboardController::class, 'deleteAccount']);
+
+    // --- NAYE ROUTES: Credit Cards Manual CRUD ---
+    Route::put('/credit-cards/{id}', [DashboardController::class, 'updateCreditCard']);
+    Route::delete('/credit-cards/{id}', [DashboardController::class, 'deleteCreditCard']);
+
+    // --- NAYE ROUTES: Transactions CRUD ---
+    Route::get('/transactions', [TransactionController::class, 'index']);
     Route::post('/transactions', [TransactionController::class, 'store']);
+    Route::put('/transactions/{id}', [TransactionController::class, 'update']);
+    Route::delete('/transactions/{id}', [TransactionController::class, 'destroy']);
     
 });

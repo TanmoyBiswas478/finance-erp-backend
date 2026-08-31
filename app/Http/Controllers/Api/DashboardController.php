@@ -157,4 +157,77 @@ class DashboardController extends Controller
 
         return response()->json(['status' => 'success', 'message' => 'EMI Paid Successfully!']);
     }
+    // ==========================================
+    // ACCOUNTS MANUAL CRUD (Update & Delete)
+    // ==========================================
+
+    public function updateAccount(Request $request, $id)
+    {
+        // Security: Ensure account belongs to the logged-in user
+        $account = Account::where('user_id', Auth::id())->findOrFail($id);
+        
+        $request->validate([
+            'bank_name' => 'required|string',
+            'account_role' => 'required|string',
+            'current_balance' => 'required|numeric'
+        ]);
+
+        $account->update($request->only(['bank_name', 'account_role', 'current_balance']));
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Account updated successfully',
+            'data' => $account
+        ]);
+    }
+
+    public function deleteAccount($id)
+    {
+        $account = Account::where('user_id', Auth::id())->findOrFail($id);
+        $account->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Account deleted successfully'
+        ]);
+    }
+
+    // ==========================================
+    // CREDIT CARDS MANUAL CRUD (Update & Delete)
+    // ==========================================
+
+    public function updateCreditCard(Request $request, $id)
+    {
+        // Security: Ensure card belongs to the logged-in user
+        $card = CreditCard::where('user_id', Auth::id())->findOrFail($id);
+
+        $request->validate([
+            'card_name' => 'required|string',
+            'total_limit' => 'required|numeric',
+            'available_limit' => 'required|numeric',
+            'billed_outstanding' => 'required|numeric',
+            'unbilled_outstanding' => 'required|numeric',
+            'billing_date' => 'required|integer'
+        ]);
+
+        $card->update($request->all());
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Credit card updated successfully',
+            'data' => $card
+        ]);
+    }
+
+    public function deleteCreditCard($id)
+    {
+        $card = CreditCard::where('user_id', Auth::id())->findOrFail($id);
+        $card->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Credit card deleted successfully'
+        ]);
+    }
+
 }
