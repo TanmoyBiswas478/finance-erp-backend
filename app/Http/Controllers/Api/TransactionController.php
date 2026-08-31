@@ -9,7 +9,7 @@ use App\Models\Account;
 use App\Models\CreditCard;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Auth; // NAYA IMPORT (Auth facade ke liye)
+use Illuminate\Support\Facades\Auth;
 
 class TransactionController extends Controller
 {
@@ -41,7 +41,6 @@ class TransactionController extends Controller
 
             $type = in_array(strtoupper($request->type), ['DEBIT', 'EXPENSE']) ? 'EXPENSE' : 'INCOME';
 
-            // Auth::id() use kiya VS Code warnings hatane ke liye
             $transaction = Transaction::create([
                 'user_id'     => Auth::id(),
                 'amount'      => $request->amount,
@@ -84,7 +83,96 @@ class TransactionController extends Controller
         }
     }
 
-    // 3. TRANSACTION DELETE KARNA (int type hint add kar diya!)
+    // 3. 🎯 NAYA: TRANSACTION UPDATE / EDIT KARNA (With Balance Reversal & Re-application)
+    public function update(Request $request, int $id)
+    {
+        $request->validate([
+            'amount'      => 'required|numeric|min:1',
+            'type'        => 'required|string', 
+            'category'    => 'required|string',
+            'source_type' => 'required|string', 
+            'source_name' => 'required|string', 
+            'date'        => 'required|date'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $transaction = Transaction::where('user_id', Auth::id())->findOrFail($id);
+
+            // STEP 1: Reverse old transaction effect on account/card
+            if ($transaction->source_type === 'ACCOUNT') {
+                $oldAccount = Account::where('user_id', Auth::id())->where('bank_name', $transaction->source)->first();
+                if ($oldAccount) {
+                    if ($transaction->type === 'EXPENSE') {
+                        $oldAccount->increment('current_balance', $transaction->amount);
+                    } else {
+                        $oldAccount->decrement('current_balance', $transaction->amount);
+                    }
+                }
+            } elseif ($transaction->source_type === 'CREDIT_CARD') {
+                $oldCard = CreditCard::where('user_id', Auth::id())->where('card_name', $transaction->source)->first();
+                if ($oldCard) {
+                    if ($transaction->type === 'EXPENSE') {
+                        $oldCard->increment('available_limit', $transaction->amount);
+                        $oldCard->decrement('unbilled_outstanding', min($transaction->amount, $oldCard->unbilled_outstanding));
+                    } else {
+                        $oldCard->decrement('available_limit', $transaction->amount);
+                        $oldCard->increment('unbilled_outstanding', $transaction->amount);
+                    }
+                }
+            }
+
+            // STEP 2: Prepare new values
+            $newType = in_array(strtoupper($request->type), ['DEBIT', 'EXPENSE']) ? 'EXPENSE' : 'INCOME';
+            $newSourceType = strtoupper($request->source_type);
+            $newSourceName = $request->source_name;
+            $newAmount = $request->amount;
+
+            // STEP 3: Apply new transaction effect on account/card
+            if ($newSourceType === 'ACCOUNT') {
+                $newAccount = Account::where('user_id', Auth::id())->where('bank_name', $newSourceName)->first();
+                if ($newAccount) {
+                    if ($newType === 'EXPENSE') {
+                        $newAccount->decrement('current_balance', $newAmount);
+                    } else {
+                        $newAccount->increment('current_balance', $newAmount);
+                    }
+                }
+            } elseif ($newSourceType === 'CREDIT_CARD') {
+                $newCard = CreditCard::where('user_id', Auth::id())->where('card_name', $newSourceName)->first();
+                if ($newCard) {
+                    if ($newType === 'EXPENSE') {
+                        $newCard->decrement('available_limit', $newAmount);
+                        $newCard->increment('unbilled_outstanding', $newAmount);
+                    } else {
+                        $newCard->increment('available_limit', $newAmount);
+                        $newCard->decrement('unbilled_outstanding', min($newAmount, $newCard->unbilled_outstanding));
+                    }
+                }
+            }
+
+            // STEP 4: Update transaction record
+            $transaction->update([
+                'amount'      => $newAmount,
+                'type'        => $newType,
+                'category'    => $request->category,
+                'source_type' => $newSourceType,
+                'source'      => $newSourceName,
+                'description' => $request->description ?? $transaction->description,
+                'date'        => $request->date,
+            ]);
+
+            DB::commit();
+            return response()->json(['status' => 'success', 'message' => 'Transaction updated and balances adjusted safely!', 'data' => $transaction]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Transaction Update Error: " . $e->getMessage());
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    // 4. TRANSACTION DELETE KARNA
     public function destroy(int $id)
     {
         try {
