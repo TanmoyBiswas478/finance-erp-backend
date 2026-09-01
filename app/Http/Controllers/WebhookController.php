@@ -10,6 +10,7 @@ use App\Models\Account;
 use App\Models\CreditCard;
 use App\Models\User; 
 use Carbon\Carbon; 
+use Illuminate\Support\Facades\Http;
 
 class WebhookController extends Controller
 {
@@ -30,74 +31,69 @@ class WebhookController extends Controller
         // 1. STATEMENT GENERATION DETECTION
         $isStatement = preg_match('/(statement is ready|statement for your.*total due)/i', $smsLower);
 
-        // 🎯 2. ULTRA-WIDE AMOUNT PARSER (Bulletproof for short notifications like "Paid 2")
+        // 🤖 2. LLM-POWERED INTELLIGENT PARSER (Gemini 1.5 Flash)
         $amount = 0;
-        
-        // Priority A: Starts with INR/Rs/₹ anywhere in the text
-        if (preg_match('/(?:rs\.?|inr|₹)\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
-            $amount = floatval(str_replace(',', '', $matches[1]));
-        }
-        // Priority B: Action words followed by number (Handles "Debited 2", "Sent 2", "Transfer of 2")
-        if ($amount == 0 && preg_match('/(?:debit(?:ed)?|credit(?:ed)?|deposit(?:ed)?|spent|received|paid|sent|payment(?: of)?|transfer(?:red)?|deduct(?:ed)?)(?:\s+(?:to|from|with|by|for|of))?\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
-            $amount = floatval(str_replace(',', '', $matches[1]));
-        }
-        // Priority C: Strict floating number fallback (e.g. "2.00 spent")
-        if ($amount == 0 && preg_match('/([\d,]+\.\d{2})\s+(?:debit(?:ed)?|credit(?:ed)?|deposit(?:ed)?|spent|received|paid|sent|deduct(?:ed)?)/i', $smsLower, $matches)) {
-            $amount = floatval(str_replace(',', '', $matches[1]));
-        }
-
-        // 🚨 SMART DEBUGGER: Ab 422 error aayega toh MacroDroid ko batayega ki kis text pe fail hua
-        if ($amount <= 0 && !$isStatement) {
-            Log::error("Amount parse failed for Notification/SMS: " . $sms);
-            return response()->json([
-                'error' => 'Could not parse valid amount',
-                'received_text' => $sms 
-            ], 422);
-        }
-
-        // 🎯 3. EXPANDED CREDIT YA DEBIT TYPE
-        $type = 'UNKNOWN'; 
-        if (preg_match('/(received your payment|payment of.*credited|payment of.*received)/i', $smsLower)) {
-            $type = 'INCOME';
-        } elseif (preg_match('/\b(debit(?:ed)?|spent|paid|withdrawn|sent|transfer(?:red)?|deduct(?:ed)?)\b/i', $smsLower)) {
-            $type = 'EXPENSE';
-        } elseif (preg_match('/\b(credit(?:ed)?|received|repayment|added|deposit(?:ed)?|refund|cashback)\b/i', $smsLower)) {
-            $type = 'INCOME';
-        } elseif (preg_match('/\bcredit\b/i', $smsLower) && !preg_match('/\bcredit\s*card\b/i', $smsLower)) {
-            $type = 'INCOME';
-        } else {
-            $type = 'EXPENSE'; 
-        }
-
-        // 🎯 4. OPTIMIZED SOURCE IDENTIFICATION
+        $type = 'EXPENSE';
         $sourceName = 'Unknown';
         $sourceType = 'ACCOUNT';
+        $category = 'Other Expenses';
 
-        if (str_contains($smsLower, 'slice')) {
-            if (preg_match('/(a\/c|account|savings)/i', $smsLower)) {
-                $sourceName = 'Slice'; $sourceType = 'ACCOUNT'; 
-            } else {
-                $sourceName = 'Slice CC'; $sourceType = 'CREDIT_CARD';
+        if (!$isStatement) {
+            $apiKey = env('GEMINI_API_KEY');
+            if (!$apiKey) {
+                Log::error("GEMINI_API_KEY is missing in .env file");
+                return response()->json(['error' => 'AI API Key not configured'], 500);
             }
-        } 
-        elseif (preg_match('/(supermoney|utkarsh|supercard|utkspr)/i', $smsLower)) {
-            $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
-        } 
-        elseif (preg_match('/(bdnsms|bandhan)/i', $smsLower)) { 
-            if (preg_match('/(credit|card|cc)\b/i', $smsLower) && !preg_match('/(a\/c|account|ac)/i', $smsLower)) {
-                $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
-            } else {
-                $sourceName = 'Bandhan'; $sourceType = 'ACCOUNT'; 
+
+            $prompt = "Analyze this bank notification/SMS: \"{$sms}\". " .
+                      "Extract the following details and return ONLY a valid JSON object without markdown formatting: " .
+                      "{\"amount\": float, \"type\": \"EXPENSE\" or \"INCOME\", \"bank_name\": \"Federal Bank\" or \"Bandhan\" or \"HDFC\" or \"Slice\" or \"Slice CC\" or \"Utkarsh SuperMoney\" or \"Bandhan CC\", \"category\": \"Food & Shopping\" or \"Shopping\" or \"Travel\" or \"Bills & Utilities\" or \"Income / Cashback\" or \"Other Expenses\"}";
+
+            try {
+                $response = Http::timeout(10)->post("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={$apiKey}", [
+                    'contents' => [
+                        [
+                            'parts' => [
+                                ['text' => $prompt]
+                            ]
+                        ]
+                    ]
+                ]);
+
+                if ($response->successful()) {
+                    $aiResponseText = $response->json('candidates.0.content.parts.0.text', '');
+                    // Clean markdown code blocks if AI returns them
+                    $cleanedJson = trim(str_replace(['```json', '```'], '', $aiResponseText));
+                    $parsedData = json_decode($cleanedJson, true);
+
+                    if (isset($parsedData['amount'])) {
+                        $amount = floatval($parsedData['amount']);
+                        $type = isset($parsedData['type']) ? strtoupper($parsedData['type']) : 'EXPENSE';
+                        $sourceName = isset($parsedData['bank_name']) ? $parsedData['bank_name'] : 'Unknown';
+                        $category = isset($parsedData['category']) ? $parsedData['category'] : 'Other Expenses';
+                        
+                        // Map source type
+                        if (str_contains(strtolower($sourceName), 'cc') || str_contains(strtolower($sourceName), 'supermoney')) {
+                            $sourceType = 'CREDIT_CARD';
+                        } else {
+                            $sourceType = 'ACCOUNT';
+                        }
+                    }
+                } else {
+                    Log::error("Gemini API Error: " . $response->body());
+                }
+            } catch (\Exception $e) {
+                Log::error("AI Parsing Exception: " . $e->getMessage());
             }
-        } 
-        elseif (preg_match('/(jupiter|federal|fedbnk|fedmobile)/i', $smsLower)) { 
-            $sourceName = 'Federal Bank'; $sourceType = 'ACCOUNT'; 
-        } elseif (str_contains($smsLower, 'hdfc')) {
-            $sourceName = 'HDFC'; $sourceType = 'ACCOUNT';
-        } 
-        // UPI Hub fallback
-        elseif (preg_match('/(gpay|google pay|phonepe|paytm|cred)/i', $smsLower)) {
-            $sourceName = 'Federal Bank'; $sourceType = 'ACCOUNT'; 
+        }
+
+        // Fallback if AI fails or amount is 0
+        if ($amount <= 0 && !$isStatement) {
+            Log::error("AI Amount parse failed for Notification/SMS: " . $sms);
+            return response()->json([
+                'error' => 'Could not parse valid amount via AI',
+                'received_text' => $sms 
+            ], 422);
         }
 
         // 5. HANDLE AUTOMATIC STATEMENT SHIFT 
@@ -121,28 +117,6 @@ class WebhookController extends Controller
                 ]);
                 return response()->json(['status' => 'success', 'message' => 'Statement automatically generated']);
             }
-        }
-
-        // 6. CATEGORIZER
-        $category = 'Unknown'; 
-        $categoryMap = [
-            'Food & Shopping' => ['swiggy', 'zomato', 'blinkit', 'zepto', 'instamart', 'mcdonalds', 'kfc', 'dominos', 'restaurant', 'food', 'grocery', 'bigbasket', 'dmart'],
-            'Shopping' => ['amazon', 'flipkart', 'myntra', 'ajio', 'meesho', 'zudio', 'pantaloons', 'lifestyle', 'mall', 'store', 'retail', 'reliance'],
-            'Travel' => ['uber', 'ola', 'rapido', 'namma yatri', 'irctc', 'makemytrip', 'goibibo', 'flight', 'ticket', 'petrol', 'fuel', 'indian oil', 'bharat petroleum', 'hpcl', 'metro', 'pump'],
-            'Bills & Utilities' => ['recharge', 'jio', 'airtel', 'vi', 'bsnl', 'electricity', 'water', 'gas', 'broadband', 'wifi', 'emi', 'subscription', 'netflix', 'prime', 'spotify']
-        ];
-
-        foreach ($categoryMap as $catName => $keywords) {
-            foreach ($keywords as $keyword) {
-                if (str_contains($smsLower, $keyword)) {
-                    $category = $catName;
-                    break 2; 
-                }
-            }
-        }
-
-        if ($category === 'Unknown') {
-            $category = ($type === 'INCOME') ? 'Income / Cashback' : 'Other Expenses';
         }
 
         // 🛑 7. THE APP NOTIFICATION & UTR SHIELD
@@ -246,15 +220,15 @@ class WebhookController extends Controller
                 'source'      => $finalMatchedName,
                 'source_type' => $sourceType,
                 'raw_sms'     => $sms,
-                'description' => 'Via Auto App/SMS',
+                'description' => 'Via AI Auto Webhook',
                 'date'        => Carbon::now('Asia/Kolkata'),
             ]);
 
             DB::commit();
-            return response()->json(['status' => 'success', 'message' => 'Transaction saved', 'data' => $transaction]);
+            return response()->json(['status' => 'success', 'message' => 'AI Transaction saved', 'data' => $transaction]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to save transaction: ' . $e->getMessage());
+            Log::error('Failed to save AI transaction: ' . $e->getMessage());
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
     }
