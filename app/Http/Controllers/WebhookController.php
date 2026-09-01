@@ -30,34 +30,38 @@ class WebhookController extends Controller
         // 1. STATEMENT GENERATION DETECTION
         $isStatement = preg_match('/(statement is ready|statement for your.*total due)/i', $smsLower);
 
-        // 🎯 2. UPGRADED AMOUNT PARSER (Specially for App Notifications)
+        // 🎯 2. ULTRA-WIDE AMOUNT PARSER (Bulletproof for short notifications like "Paid 2")
         $amount = 0;
         
-        // Priority A: Starts with INR/Rs/₹ (Standard SMS)
+        // Priority A: Starts with INR/Rs/₹ anywhere in the text
         if (preg_match('/(?:rs\.?|inr|₹)\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
-        // Priority B: App Notifications format ("Paid 200", "Sent 200", "Received 200")
-        if ($amount == 0 && preg_match('/(?:debited|credited|deposited|spent|received|paid|sent|payment of)\s+(?:to|from|with|by|for)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
+        // Priority B: Action words followed by number (Handles "Debited 2", "Sent 2", "Transfer of 2")
+        if ($amount == 0 && preg_match('/(?:debit(?:ed)?|credit(?:ed)?|deposit(?:ed)?|spent|received|paid|sent|payment(?: of)?|transfer(?:red)?|deduct(?:ed)?)(?:\s+(?:to|from|with|by|for|of))?\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
-        // Priority C: Strict floating number fallback
-        if ($amount == 0 && preg_match('/([\d,]+\.\d{2})\s+(?:debited|credited|deposited|spent|received|paid|sent)/i', $sms, $matches)) {
+        // Priority C: Strict floating number fallback (e.g. "2.00 spent")
+        if ($amount == 0 && preg_match('/([\d,]+\.\d{2})\s+(?:debit(?:ed)?|credit(?:ed)?|deposit(?:ed)?|spent|received|paid|sent|deduct(?:ed)?)/i', $smsLower, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
 
+        // 🚨 SMART DEBUGGER: Ab 422 error aayega toh MacroDroid ko batayega ki kis text pe fail hua
         if ($amount <= 0 && !$isStatement) {
             Log::error("Amount parse failed for Notification/SMS: " . $sms);
-            return response()->json(['error' => 'Could not parse valid amount'], 422);
+            return response()->json([
+                'error' => 'Could not parse valid amount',
+                'received_text' => $sms 
+            ], 422);
         }
 
-        // 🎯 3. CREDIT YA DEBIT TYPE
+        // 🎯 3. EXPANDED CREDIT YA DEBIT TYPE
         $type = 'UNKNOWN'; 
         if (preg_match('/(received your payment|payment of.*credited|payment of.*received)/i', $smsLower)) {
             $type = 'INCOME';
-        } elseif (preg_match('/\b(debited|spent|paid|withdrawn|sent|transfer)\b/i', $smsLower)) {
+        } elseif (preg_match('/\b(debit(?:ed)?|spent|paid|withdrawn|sent|transfer(?:red)?|deduct(?:ed)?)\b/i', $smsLower)) {
             $type = 'EXPENSE';
-        } elseif (preg_match('/\b(credited|received|repayment|added|deposit|deposited|refund|cashback)\b/i', $smsLower)) {
+        } elseif (preg_match('/\b(credit(?:ed)?|received|repayment|added|deposit(?:ed)?|refund|cashback)\b/i', $smsLower)) {
             $type = 'INCOME';
         } elseif (preg_match('/\bcredit\b/i', $smsLower) && !preg_match('/\bcredit\s*card\b/i', $smsLower)) {
             $type = 'INCOME';
@@ -65,7 +69,7 @@ class WebhookController extends Controller
             $type = 'EXPENSE'; 
         }
 
-        // 🎯 4. OPTIMIZED SOURCE IDENTIFICATION (Includes App Support)
+        // 🎯 4. OPTIMIZED SOURCE IDENTIFICATION
         $sourceName = 'Unknown';
         $sourceType = 'ACCOUNT';
 
@@ -79,19 +83,19 @@ class WebhookController extends Controller
         elseif (preg_match('/(supermoney|utkarsh|supercard|utkspr)/i', $smsLower)) {
             $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
         } 
-        elseif (preg_match('/(bdnsms|bandhan)/i', $smsLower)) { // bandhan will catch app notifications
+        elseif (preg_match('/(bdnsms|bandhan)/i', $smsLower)) { 
             if (preg_match('/(credit|card|cc)\b/i', $smsLower) && !preg_match('/(a\/c|account|ac)/i', $smsLower)) {
                 $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
             } else {
                 $sourceName = 'Bandhan'; $sourceType = 'ACCOUNT'; 
             }
         } 
-        elseif (preg_match('/(jupiter|federal|fedbnk|fedmobile)/i', $smsLower)) { // Fedmobile added
+        elseif (preg_match('/(jupiter|federal|fedbnk|fedmobile)/i', $smsLower)) { 
             $sourceName = 'Federal Bank'; $sourceType = 'ACCOUNT'; 
         } elseif (str_contains($smsLower, 'hdfc')) {
             $sourceName = 'HDFC'; $sourceType = 'ACCOUNT';
         } 
-        // Auto-Route general UPI apps to Daily UPI Hub
+        // UPI Hub fallback
         elseif (preg_match('/(gpay|google pay|phonepe|paytm|cred)/i', $smsLower)) {
             $sourceName = 'Federal Bank'; $sourceType = 'ACCOUNT'; 
         }
@@ -141,10 +145,9 @@ class WebhookController extends Controller
             $category = ($type === 'INCOME') ? 'Income / Cashback' : 'Other Expenses';
         }
 
-        // 🛑 7. THE NEW APP NOTIFICATION & UTR SHIELD
+        // 🛑 7. THE APP NOTIFICATION & UTR SHIELD
         if ($sourceName !== 'Unknown' && $amount > 0) {
             $refId = null;
-            // Extract exactly 12 digits (Standard for Indian UPI UTRs)
             if (preg_match('/(?<!\d)(\d{12})(?!\d)/', $sms, $refMatches)) {
                 $refId = $refMatches[1];
             } elseif (preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $sms, $refMatches)) {
@@ -161,8 +164,7 @@ class WebhookController extends Controller
                 return response()->json(['status' => 'success', 'message' => 'Exact duplicate ignored']);
             }
 
-            // 🎯 B) FUZZY NOTIFICATION SHIELD (New)
-            // Agar SMS aur App Notification ek sath aate hain (same amount, same type, under 60 secs) toh doosre wale ko block kar dega
+            // B) FUZZY NOTIFICATION SHIELD
             $fuzzyDuplicate = Transaction::where('user_id', $userId)
                 ->where('amount', $amount)
                 ->where('type', $type)
@@ -170,7 +172,6 @@ class WebhookController extends Controller
                 ->first();
 
             if ($fuzzyDuplicate) {
-                // Agar pehle notification aaya jisme UTR nahi tha, aur ab SMS aaya jisme UTR hai, toh usko update kar lo bina balance kaate
                 if ($refId && !str_contains($fuzzyDuplicate->raw_sms, $refId)) {
                     $fuzzyDuplicate->raw_sms = $fuzzyDuplicate->raw_sms . ' | UTR: ' . $refId;
                     $fuzzyDuplicate->save();
@@ -202,7 +203,7 @@ class WebhookController extends Controller
                     $account = Account::where('user_id', $userId)->where('bank_name', 'LIKE', '%' . $sourceName . '%')->first();
                     
                     if ($account) {
-                        $finalMatchedName = $account->bank_name; // Record exactly as in DB
+                        $finalMatchedName = $account->bank_name; 
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $account->decrement('current_balance', $amount);
                         } else {
@@ -215,7 +216,7 @@ class WebhookController extends Controller
                     $card = CreditCard::where('user_id', $userId)->where('card_name', 'LIKE', '%' . $sourceName . '%')->first();
                     
                     if ($card) {
-                        $finalMatchedName = $card->card_name; // Record exactly as in DB
+                        $finalMatchedName = $card->card_name; 
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $card->decrement('available_limit', $amount);
                             $card->increment('unbilled_outstanding', $amount);
