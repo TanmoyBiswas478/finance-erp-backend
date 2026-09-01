@@ -25,9 +25,9 @@ class DatabaseSeeder extends Seeder
         }
 
         // 1. Bank Accounts
-        Account::create(['user_id' => $user->id, 'bank_name' => 'Jupiter', 'account_role' => 'SAVINGS', 'current_balance' => 2428.42]);
+        Account::create(['user_id' => $user->id, 'bank_name' => 'Jupiter', 'account_role' => 'SAVINGS', 'current_balance' => 3000.00]);
         Account::create(['user_id' => $user->id, 'bank_name' => 'HDFC', 'account_role' => 'SAVINGS', 'current_balance' => 10000.00]);
-        Account::create(['user_id' => $user->id, 'bank_name' => 'Bandhan', 'account_role' => 'SAVINGS', 'current_balance' => 4391.19]);
+        Account::create(['user_id' => $user->id, 'bank_name' => 'Bandhan', 'account_role' => 'SAVINGS', 'current_balance' => 15014.61]);
         Account::create(['user_id' => $user->id, 'bank_name' => 'Slice', 'account_role' => 'SAVINGS', 'current_balance' => 1.00]);
 
         // 2. Credit Cards
@@ -35,9 +35,9 @@ class DatabaseSeeder extends Seeder
             'user_id' => $user->id,
             'card_name' => 'Utkarsh SuperMoney',
             'total_limit' => 32000.00,
-            'available_limit' => 29845.40,
+            'available_limit' => 32000.00,
             'billed_outstanding' => 0.00,
-            'unbilled_outstanding' => 2155.00,
+            'unbilled_outstanding' => 0.00,
             'billing_date' => 1
         ]);
         CreditCard::create([
@@ -61,7 +61,7 @@ class DatabaseSeeder extends Seeder
 
         // 3. Budgets
         CategoryBudget::create(['user_id' => $user->id, 'category_name' => 'Food & Shopping', 'budget_limit' => 4000]);
-        CategoryBudget::create(['user_id' => $user->id, 'category_name' => 'Travel', 'budget_limit' => 2000]);
+        CategoryBudget::create(['user_id' => $user->id, 'category_name' => 'Petrol', 'budget_limit' => 2000]);
         CategoryBudget::create(['user_id' => $user->id, 'category_name' => 'Shopping', 'budget_limit' => 1000]);
         CategoryBudget::create(['user_id' => $user->id, 'category_name' => 'Bills & Utilities', 'budget_limit' => 1000]);
     }
