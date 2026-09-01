@@ -9,6 +9,7 @@ use App\Models\Transaction;
 use App\Models\Account;      
 use App\Models\CreditCard;
 use App\Models\User; 
+use Carbon\Carbon; // 🎯 Timezone ke liye zaroori
 
 class WebhookController extends Controller
 {
@@ -26,71 +27,74 @@ class WebhookController extends Controller
         $userId = $user->id; 
         $smsLower = strtolower($sms);
 
-        // 🧠 1. STATEMENT GENERATION DETECTION (Smart Auto-Billed Shift)
+        // 1. STATEMENT GENERATION DETECTION
         $isStatement = preg_match('/(statement is ready|statement for your.*total due)/i', $smsLower);
 
-        // 2. AMOUNT PARSE (Added 'deposited', 'payment of', 'pay' for Income & CC bills)
+        // 🎯 2. UPGRADED AMOUNT PARSER (Specially for Federal & Bandhan formats)
         $amount = 0;
-        if (preg_match('/(?:rs\.?|inr|₹|amount|debited|credited|deposited|received|paid|spent|sent|payment of|pay)\s*[:\-]?\s*(?:rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
+        
+        // Priority A: Starts with INR/Rs/₹ (e.g., "INR 2,726.58 deposited")
+        if (preg_match('/(?:rs\.?|inr|₹)\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
-        if ($amount == 0 && preg_match('/^([\d,]+\.?\d*)\s*(?:debited|credited|deposited|spent|received|paid|sent)/i', $sms, $matches)) {
+        // Priority B: Debited/Credited followed by amount (e.g., "Debited Rs 2726.58")
+        if ($amount == 0 && preg_match('/(?:debited|credited|deposited|spent|received|paid)\s+(?:with|by|for|rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
-        if ($amount == 0 && preg_match('/([\d,]+\.\d{2})/', $sms, $matches)) {
+        // Priority C: Bare amount followed by action
+        if ($amount == 0 && preg_match('/([\d,]+\.\d{2})\s+(?:debited|credited|deposited|spent|received|paid)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
 
         if ($amount <= 0 && !$isStatement) {
+            Log::error("Amount parse failed for: " . $sms);
             return response()->json(['error' => 'Could not parse valid amount'], 422);
         }
 
-        // 🎯 3. OPTIMIZED SOURCE PEHCHANNA (Sender IDs: UTKSPR, BDNSMS)
+        // 🎯 3. CREDIT YA DEBIT TYPE
+        $type = 'UNKNOWN'; 
+        if (preg_match('/(received your payment|payment of.*credited|payment of.*received)/i', $smsLower)) {
+            $type = 'INCOME';
+        } elseif (preg_match('/\b(debited|spent|paid|withdrawn|sent|transfer)\b/i', $smsLower)) {
+            $type = 'EXPENSE';
+        } elseif (preg_match('/\b(credited|received|repayment|added|deposit|deposited|refund|cashback)\b/i', $smsLower)) {
+            $type = 'INCOME';
+        } elseif (preg_match('/\bcredit\b/i', $smsLower) && !preg_match('/\bcredit\s*card\b/i', $smsLower)) {
+            $type = 'INCOME';
+        } else {
+            $type = 'EXPENSE'; 
+        }
+
+        // 🎯 4. OPTIMIZED SOURCE IDENTIFICATION
         $sourceName = 'Unknown';
         $sourceType = 'ACCOUNT';
 
-        // Slice Account vs Slice CC logic
         if (str_contains($smsLower, 'slice')) {
-            if (preg_match('/(account|a\/c)/i', $smsLower)) {
-                $sourceName = 'Slice Account'; $sourceType = 'ACCOUNT';
+            if (preg_match('/(a\/c|account|savings)/i', $smsLower)) {
+                $sourceName = 'Slice'; $sourceType = 'ACCOUNT'; 
             } else {
                 $sourceName = 'Slice CC'; $sourceType = 'CREDIT_CARD';
             }
         } 
-        // Utkarsh SuperMoney
         elseif (preg_match('/(supermoney|utkarsh|supercard|utkspr)/i', $smsLower)) {
             $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
         } 
-        // Bandhan (Account vs CC Logic)
         elseif (preg_match('/(bdnsms)/i', $smsLower) || str_contains($smsLower, 'bandhan')) {
-            if (preg_match('/(credit|card|cc)\b/i', $smsLower) && !preg_match('/a\/c/i', $smsLower)) {
+            if (preg_match('/(a\/c|account|ac)/i', $smsLower)) {
+                $sourceName = 'Bandhan'; $sourceType = 'ACCOUNT';
+            } elseif (preg_match('/(credit|card|cc)\b/i', $smsLower)) {
                 $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
             } else {
-                $sourceName = 'Bandhan'; $sourceType = 'ACCOUNT';
+                $sourceName = 'Bandhan'; $sourceType = 'ACCOUNT'; 
             }
         } 
-        // Jupiter & Federal Separated
-        elseif (preg_match('/(jupiter)/i', $smsLower)) {
-            $sourceName = 'Jupiter'; $sourceType = 'ACCOUNT';
-        } elseif (preg_match('/(federal|fedbnk)/i', $smsLower)) {
-            $sourceName = 'Federal Bank'; $sourceType = 'ACCOUNT';
-        } 
-        // HDFC
-        elseif (preg_match('/(hdfc)/i', $smsLower)) {
+        elseif (preg_match('/(jupiter|federal|fedbnk)/i', $smsLower)) {
+            $sourceName = 'Federal Bank'; $sourceType = 'ACCOUNT'; 
+        } elseif (str_contains($smsLower, 'hdfc')) {
             $sourceName = 'HDFC'; $sourceType = 'ACCOUNT';
-        } 
-        // UPI Apps
-        elseif (preg_match('/(gpay|google pay)/i', $smsLower)) {
-            $sourceName = 'GPay'; $sourceType = 'ACCOUNT';
-        } elseif (str_contains($smsLower, 'phonepe')) {
-            $sourceName = 'PhonePe'; $sourceType = 'ACCOUNT';
-        } elseif (str_contains($smsLower, 'paytm')) {
-            $sourceName = 'Paytm'; $sourceType = 'ACCOUNT';
-        } elseif (str_contains($smsLower, 'cred')) {
-            $sourceName = 'CRED'; $sourceType = 'ACCOUNT';
         }
 
-        // 🛑 3.5 HANDLE AUTOMATIC STATEMENT SHIFT 
+        // 5. HANDLE AUTOMATIC STATEMENT SHIFT 
         if ($isStatement && $sourceType === 'CREDIT_CARD') {
             $card = CreditCard::where('user_id', $userId)->where('card_name', 'LIKE', '%' . $sourceName . '%')->first();
             if ($card) {
@@ -103,31 +107,17 @@ class WebhookController extends Controller
                     'amount' => $amount > 0 ? $amount : $card->billed_outstanding,
                     'type' => 'STATEMENT', 
                     'category' => 'Bill Generation',
-                    'source' => $sourceName, 
+                    'source' => $card->card_name,
                     'source_type' => 'CREDIT_CARD',
                     'raw_sms' => $sms, 
                     'description' => 'Auto-Generated via Bank SMS', 
-                    'date' => now(),
+                    'date' => Carbon::now('Asia/Kolkata'),
                 ]);
                 return response()->json(['status' => 'success', 'message' => 'Statement automatically generated']);
             }
         }
 
-        // 4. CREDIT YA DEBIT TYPE
-        $type = 'UNKNOWN'; 
-        if (preg_match('/(received your payment|payment of.*credited|payment of.*received)/i', $smsLower)) {
-            $type = 'INCOME';
-        } elseif (preg_match('/\b(debited|spent|paid|withdrawn|sent)\b/i', $smsLower)) {
-            $type = 'EXPENSE';
-        } elseif (preg_match('/\b(credited|received|repayment|added|deposit|deposited|refund|cashback)\b/i', $smsLower)) {
-            $type = 'INCOME';
-        } elseif (preg_match('/\bcredit\b/i', $smsLower) && !preg_match('/\bcredit\s*card\b/i', $smsLower)) {
-            $type = 'INCOME';
-        } else {
-            $type = 'EXPENSE'; 
-        }
-
-        // 🧠 5. CATEGORIZER
+        // 6. CATEGORIZER
         $category = 'Unknown'; 
         $categoryMap = [
             'Food & Shopping' => ['swiggy', 'zomato', 'blinkit', 'zepto', 'instamart', 'mcdonalds', 'kfc', 'dominos', 'restaurant', 'food', 'grocery', 'bigbasket', 'dmart'],
@@ -146,63 +136,56 @@ class WebhookController extends Controller
         }
 
         if ($category === 'Unknown') {
-            if ($type === 'INCOME') {
-                $category = 'Income / Cashback';
-            } else {
-                $category = 'Other Expenses';
-            }
+            $category = ($type === 'INCOME') ? 'Income / Cashback' : 'Other Expenses';
         }
 
-        // 🛑 5.5 ANTI-SPAM
+        // 🛑 7. THE ANTI-SPAM UTR SHIELD (Fixed for exactly 12-digit UPI refs)
         if ($sourceName !== 'Unknown' && $amount > 0) {
             $refId = null;
-            if (preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $sms, $refMatches)) {
+            // 1st Priority: Extract exactly 12 digits (Standard for Indian UPI UTRs)
+            if (preg_match('/(?<!\d)(\d{12})(?!\d)/', $sms, $refMatches)) {
+                $refId = $refMatches[1];
+            } 
+            // 2nd Priority: Fallback for generic ref numbers
+            elseif (preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $sms, $refMatches)) {
                 $refId = $refMatches[1];
             }
 
+            // EXACT Duplicate block (blocks double hits from the same app for the exact same message)
             $exactDuplicate = Transaction::where('user_id', $userId)
-                ->where('amount', $amount)
                 ->where('raw_sms', $sms)
-                ->where('created_at', '>=', now()->subSeconds(15))
+                ->where('created_at', '>=', Carbon::now()->subSeconds(30))
                 ->first();
 
             if ($exactDuplicate) {
                 return response()->json(['status' => 'success', 'message' => 'Exact duplicate ignored']);
             }
 
+            // UTR Shield: Sirf tabhi block karega jab TYPE bhi same ho! (Debit & Credit dono ko allow karega)
             if ($refId) {
                 $utrDuplicate = Transaction::where('user_id', $userId)
                     ->where('raw_sms', 'LIKE', "%{$refId}%")
-                    ->where('created_at', '>=', now()->subDays(7))
+                    ->where('type', $type) // 🎯 Yeh sabse bada fix hai
+                    ->where('created_at', '>=', Carbon::now()->subDays(7))
                     ->exists();
                     
                 if ($utrDuplicate) {
-                    return response()->json(['status' => 'success', 'message' => 'UTR already processed']);
+                    return response()->json(['status' => 'success', 'message' => 'UTR already processed for this specific type']);
                 }
             }
         }
 
-        // 6. DATABASE & BALANCE SYNC 
+        // 8. DATABASE & BALANCE SYNC 
         try {
             DB::beginTransaction();
-
-            $transaction = Transaction::create([
-                'user_id'     => $userId,
-                'amount'      => $amount,
-                'type'        => $type,
-                'category'    => $category,
-                'source'      => $sourceName,
-                'source_type' => $sourceType,
-                'raw_sms'     => $sms,
-                'description' => 'Via Auto App/SMS',
-                'date'        => now(),
-            ]);
+            $finalMatchedName = $sourceName;
 
             if ($sourceName !== 'Unknown') {
                 if ($sourceType === 'ACCOUNT') {
                     $account = Account::where('user_id', $userId)->where('bank_name', 'LIKE', '%' . $sourceName . '%')->first();
                     
                     if ($account) {
+                        $finalMatchedName = $account->bank_name; // Record exactly as in DB
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $account->decrement('current_balance', $amount);
                         } else {
@@ -215,20 +198,18 @@ class WebhookController extends Controller
                     $card = CreditCard::where('user_id', $userId)->where('card_name', 'LIKE', '%' . $sourceName . '%')->first();
                     
                     if ($card) {
+                        $finalMatchedName = $card->card_name; // Record exactly as in DB
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $card->decrement('available_limit', $amount);
                             $card->increment('unbilled_outstanding', $amount);
                         } else {
-                            // 🌊 THE WATERFALL PAYMENT LOGIC 
-                            $card->increment('available_limit', $amount);
+                            $card->increment('available_limit', $amount); 
                             $remaining = $amount;
-                            
                             if ($card->billed_outstanding > 0) {
                                 $deduct = min($remaining, $card->billed_outstanding);
                                 $card->decrement('billed_outstanding', $deduct);
                                 $remaining -= $deduct;
                             }
-                            
                             if ($remaining > 0) {
                                 $card->decrement('unbilled_outstanding', min($remaining, $card->unbilled_outstanding));
                             }
@@ -238,6 +219,18 @@ class WebhookController extends Controller
                     }
                 }
             }
+
+            $transaction = Transaction::create([
+                'user_id'     => $userId,
+                'amount'      => $amount,
+                'type'        => $type,
+                'category'    => $category,
+                'source'      => $finalMatchedName,
+                'source_type' => $sourceType,
+                'raw_sms'     => $sms,
+                'description' => 'Via Auto App/SMS',
+                'date'        => Carbon::now('Asia/Kolkata'),
+            ]);
 
             DB::commit();
             return response()->json(['status' => 'success', 'message' => 'Transaction saved', 'data' => $transaction]);
