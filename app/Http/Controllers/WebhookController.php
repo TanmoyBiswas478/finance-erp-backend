@@ -31,7 +31,7 @@ class WebhookController extends Controller
         // 1. STATEMENT GENERATION DETECTION
         $isStatement = preg_match('/(statement is ready|statement for your.*total due)/i', $smsLower);
 
-        // 🤖 2. LLM-POWERED INTELLIGENT PARSER (Gemini 1.5 Flash)
+        // 🤖 2. LLM-POWERED INTELLIGENT PARSER WITH RETRY SHIELD (Gemini 2.5 Flash)
         $amount = 0;
         $type = 'EXPENSE';
         $sourceName = 'Unknown';
@@ -49,47 +49,61 @@ class WebhookController extends Controller
                 "Extract the following details and return ONLY a valid JSON object without markdown formatting: " .
                 "{\"amount\": float, \"type\": \"EXPENSE\" or \"INCOME\", \"bank_name\": \"Federal Bank\" or \"Bandhan\" or \"HDFC\" or \"Slice\" or \"Slice CC\" or \"Utkarsh SuperMoney\" or \"Bandhan CC\", \"category\": \"Food & Shopping\" or \"Shopping\" or \"Travel\" or \"Bills & Utilities\" or \"Income / Cashback\" or \"Other Expenses\"}";
 
-            try {
-                $response = Http::timeout(10)->post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={$apiKey}", [
-                    'contents' => [
-                        [
-                            'parts' => [
-                                ['text' => $prompt]
+            $maxRetries = 3;
+            $attempt = 0;
+            $apiSuccessful = false;
+
+            while ($attempt < $maxRetries && !$apiSuccessful) {
+                try {
+                    $attempt++;
+                    $response = Http::timeout(10)->post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={$apiKey}", [
+                        'contents' => [
+                            [
+                                'parts' => [
+                                    ['text' => $prompt]
+                                ]
                             ]
                         ]
-                    ]
-                ]);
+                    ]);
 
-                if ($response->successful()) {
-                    $aiResponseText = $response->json('candidates.0.content.parts.0.text', '');
+                    if ($response->successful()) {
+                        $apiSuccessful = true;
+                        $aiResponseText = $response->json('candidates.0.content.parts.0.text', '');
 
-                    // 👇 Yeh line add karlo temporary debugging ke liye
-                    Log::info("Gemini Raw AI Response: " . $aiResponseText);
-                    // Clean markdown code blocks if AI returns them
-                    $cleanedJson = trim(str_replace(['```json', '```'], '', $aiResponseText));
-                    $parsedData = json_decode($cleanedJson, true);
+                        Log::info("Gemini Raw AI Response: " . $aiResponseText);
+                        $cleanedJson = trim(str_replace(['```json', '```'], '', $aiResponseText));
+                        $parsedData = json_decode($cleanedJson, true);
 
-                    // 👇 Yeh bhi check karlo ki decode hone ke baad amount kya mila
-                    Log::info("Parsed Amount: " . ($parsedData['amount'] ?? 'NULL'));
+                        Log::info("Parsed Amount: " . ($parsedData['amount'] ?? 'NULL'));
 
-                    if (isset($parsedData['amount'])) {
-                        $amount = floatval($parsedData['amount']);
-                        $type = isset($parsedData['type']) ? strtoupper($parsedData['type']) : 'EXPENSE';
-                        $sourceName = isset($parsedData['bank_name']) ? $parsedData['bank_name'] : 'Unknown';
-                        $category = isset($parsedData['category']) ? $parsedData['category'] : 'Other Expenses';
+                        if (isset($parsedData['amount'])) {
+                            $amount = floatval($parsedData['amount']);
+                            $type = isset($parsedData['type']) ? strtoupper($parsedData['type']) : 'EXPENSE';
+                            $sourceName = isset($parsedData['bank_name']) ? $parsedData['bank_name'] : 'Unknown';
+                            $category = isset($parsedData['category']) ? $parsedData['category'] : 'Other Expenses';
 
-                        // Map source type
-                        if (str_contains(strtolower($sourceName), 'cc') || str_contains(strtolower($sourceName), 'supermoney')) {
-                            $sourceType = 'CREDIT_CARD';
-                        } else {
-                            $sourceType = 'ACCOUNT';
+                            if (str_contains(strtolower($sourceName), 'cc') || str_contains(strtolower($sourceName), 'supermoney')) {
+                                $sourceType = 'CREDIT_CARD';
+                            } else {
+                                $sourceType = 'ACCOUNT';
+                            }
                         }
+                    } else {
+                        // If it's a 503 High Demand error, wait 1 second and retry
+                        if ($response->status() === 503 && $attempt < $maxRetries) {
+                            usleep(1000000); // Wait 1 second
+                            continue;
+                        }
+                        Log::error("Gemini API Error: " . $response->body());
+                        break;
                     }
-                } else {
-                    Log::error("Gemini API Error: " . $response->body());
+                } catch (\Exception $e) {
+                    if ($attempt < $maxRetries) {
+                        usleep(1000000);
+                        continue;
+                    }
+                    Log::error("AI Parsing Exception: " . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                Log::error("AI Parsing Exception: " . $e->getMessage());
             }
         }
 
@@ -104,7 +118,14 @@ class WebhookController extends Controller
 
         // 5. HANDLE AUTOMATIC STATEMENT SHIFT 
         if ($isStatement && $sourceType === 'CREDIT_CARD') {
-            $card = CreditCard::where('user_id', $userId)->where('card_name', 'LIKE', '%' . $sourceName . '%')->first();
+            $card = CreditCard::where('user_id', $userId)
+                ->where(function($query) use ($sourceName) {
+                    $query->where('card_name', 'LIKE', '%' . $sourceName . '%')
+                          ->orWhere('card_name', 'LIKE', '%Slice%')
+                          ->orWhere('card_name', 'LIKE', '%Bandhan%')
+                          ->orWhere('card_name', 'LIKE', '%SuperMoney%');
+                })->first();
+
             if ($card) {
                 $card->billed_outstanding += $card->unbilled_outstanding;
                 $card->unbilled_outstanding = 0;
@@ -173,14 +194,20 @@ class WebhookController extends Controller
             }
         }
 
-        // 8. DATABASE & BALANCE SYNC 
+        // 8. DATABASE & BALANCE SYNC WITH FLEXIBLE MAPPING
         try {
             DB::beginTransaction();
             $finalMatchedName = $sourceName;
 
             if ($sourceName !== 'Unknown') {
                 if ($sourceType === 'ACCOUNT') {
-                    $account = Account::where('user_id', $userId)->where('bank_name', 'LIKE', '%' . $sourceName . '%')->first();
+                    $account = Account::where('user_id', $userId)
+                        ->where(function($query) use ($sourceName) {
+                            $query->where('bank_name', 'LIKE', '%' . $sourceName . '%')
+                                  ->orWhere('bank_name', 'LIKE', '%Federal%')
+                                  ->orWhere('bank_name', 'LIKE', '%Jupiter%')
+                                  ->orWhere('bank_name', 'LIKE', '%Bandhan%');
+                        })->first();
 
                     if ($account) {
                         $finalMatchedName = $account->bank_name;
@@ -193,7 +220,13 @@ class WebhookController extends Controller
                         Log::warning("Account not found for name: " . $sourceName);
                     }
                 } elseif ($sourceType === 'CREDIT_CARD') {
-                    $card = CreditCard::where('user_id', $userId)->where('card_name', 'LIKE', '%' . $sourceName . '%')->first();
+                    $card = CreditCard::where('user_id', $userId)
+                        ->where(function($query) use ($sourceName) {
+                            $query->where('card_name', 'LIKE', '%' . $sourceName . '%')
+                                  ->orWhere('card_name', 'LIKE', '%Slice%')
+                                  ->orWhere('card_name', 'LIKE', '%Bandhan%')
+                                  ->orWhere('card_name', 'LIKE', '%SuperMoney%');
+                        })->first();
 
                     if ($card) {
                         $finalMatchedName = $card->card_name;
