@@ -5,11 +5,11 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Models\Transaction; 
-use App\Models\Account;      
+use App\Models\Transaction;
+use App\Models\Account;
 use App\Models\CreditCard;
-use App\Models\User; 
-use Carbon\Carbon; 
+use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Http;
 
 class WebhookController extends Controller
@@ -17,7 +17,7 @@ class WebhookController extends Controller
     public function handleSms(Request $request)
     {
         $sms = $request->input('raw_sms');
-        $userEmail = $request->input('user_email'); 
+        $userEmail = $request->input('user_email');
 
         if (!$sms) return response()->json(['error' => 'No SMS received'], 400);
         if (!$userEmail) return response()->json(['error' => 'User Email missing in webhook'], 400);
@@ -25,7 +25,7 @@ class WebhookController extends Controller
         $user = User::where('email', $userEmail)->first();
         if (!$user) return response()->json(['error' => 'User not found in ERP'], 404);
 
-        $userId = $user->id; 
+        $userId = $user->id;
         $smsLower = strtolower($sms);
 
         // 1. STATEMENT GENERATION DETECTION
@@ -46,8 +46,8 @@ class WebhookController extends Controller
             }
 
             $prompt = "Analyze this bank notification/SMS: \"{$sms}\". " .
-                      "Extract the following details and return ONLY a valid JSON object without markdown formatting: " .
-                      "{\"amount\": float, \"type\": \"EXPENSE\" or \"INCOME\", \"bank_name\": \"Federal Bank\" or \"Bandhan\" or \"HDFC\" or \"Slice\" or \"Slice CC\" or \"Utkarsh SuperMoney\" or \"Bandhan CC\", \"category\": \"Food & Shopping\" or \"Shopping\" or \"Travel\" or \"Bills & Utilities\" or \"Income / Cashback\" or \"Other Expenses\"}";
+                "Extract the following details and return ONLY a valid JSON object without markdown formatting: " .
+                "{\"amount\": float, \"type\": \"EXPENSE\" or \"INCOME\", \"bank_name\": \"Federal Bank\" or \"Bandhan\" or \"HDFC\" or \"Slice\" or \"Slice CC\" or \"Utkarsh SuperMoney\" or \"Bandhan CC\", \"category\": \"Food & Shopping\" or \"Shopping\" or \"Travel\" or \"Bills & Utilities\" or \"Income / Cashback\" or \"Other Expenses\"}";
 
             try {
                 $response = Http::timeout(10)->post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={$apiKey}", [
@@ -62,16 +62,22 @@ class WebhookController extends Controller
 
                 if ($response->successful()) {
                     $aiResponseText = $response->json('candidates.0.content.parts.0.text', '');
+
+                    // 👇 Yeh line add karlo temporary debugging ke liye
+                    Log::info("Gemini Raw AI Response: " . $aiResponseText);
                     // Clean markdown code blocks if AI returns them
                     $cleanedJson = trim(str_replace(['```json', '```'], '', $aiResponseText));
                     $parsedData = json_decode($cleanedJson, true);
+
+                    // 👇 Yeh bhi check karlo ki decode hone ke baad amount kya mila
+                    Log::info("Parsed Amount: " . ($parsedData['amount'] ?? 'NULL'));
 
                     if (isset($parsedData['amount'])) {
                         $amount = floatval($parsedData['amount']);
                         $type = isset($parsedData['type']) ? strtoupper($parsedData['type']) : 'EXPENSE';
                         $sourceName = isset($parsedData['bank_name']) ? $parsedData['bank_name'] : 'Unknown';
                         $category = isset($parsedData['category']) ? $parsedData['category'] : 'Other Expenses';
-                        
+
                         // Map source type
                         if (str_contains(strtolower($sourceName), 'cc') || str_contains(strtolower($sourceName), 'supermoney')) {
                             $sourceType = 'CREDIT_CARD';
@@ -92,7 +98,7 @@ class WebhookController extends Controller
             Log::error("AI Amount parse failed for Notification/SMS: " . $sms);
             return response()->json([
                 'error' => 'Could not parse valid amount via AI',
-                'received_text' => $sms 
+                'received_text' => $sms
             ], 422);
         }
 
@@ -103,16 +109,16 @@ class WebhookController extends Controller
                 $card->billed_outstanding += $card->unbilled_outstanding;
                 $card->unbilled_outstanding = 0;
                 $card->save();
-                
+
                 Transaction::create([
-                    'user_id' => $userId, 
+                    'user_id' => $userId,
                     'amount' => $amount > 0 ? $amount : $card->billed_outstanding,
-                    'type' => 'STATEMENT', 
+                    'type' => 'STATEMENT',
                     'category' => 'Bill Generation',
                     'source' => $card->card_name,
                     'source_type' => 'CREDIT_CARD',
-                    'raw_sms' => $sms, 
-                    'description' => 'Auto-Generated via Bank SMS', 
+                    'raw_sms' => $sms,
+                    'description' => 'Auto-Generated via Bank SMS',
                     'date' => Carbon::now('Asia/Kolkata'),
                 ]);
                 return response()->json(['status' => 'success', 'message' => 'Statement automatically generated']);
@@ -157,10 +163,10 @@ class WebhookController extends Controller
             if ($refId) {
                 $utrDuplicate = Transaction::where('user_id', $userId)
                     ->where('raw_sms', 'LIKE', "%{$refId}%")
-                    ->where('type', $type) 
+                    ->where('type', $type)
                     ->where('created_at', '>=', now()->subDays(7))
                     ->exists();
-                    
+
                 if ($utrDuplicate) {
                     return response()->json(['status' => 'success', 'message' => 'UTR already processed for this specific type']);
                 }
@@ -175,27 +181,27 @@ class WebhookController extends Controller
             if ($sourceName !== 'Unknown') {
                 if ($sourceType === 'ACCOUNT') {
                     $account = Account::where('user_id', $userId)->where('bank_name', 'LIKE', '%' . $sourceName . '%')->first();
-                    
+
                     if ($account) {
-                        $finalMatchedName = $account->bank_name; 
+                        $finalMatchedName = $account->bank_name;
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $account->decrement('current_balance', $amount);
                         } else {
-                            $account->increment('current_balance', $amount); 
+                            $account->increment('current_balance', $amount);
                         }
                     } else {
                         Log::warning("Account not found for name: " . $sourceName);
                     }
                 } elseif ($sourceType === 'CREDIT_CARD') {
                     $card = CreditCard::where('user_id', $userId)->where('card_name', 'LIKE', '%' . $sourceName . '%')->first();
-                    
+
                     if ($card) {
-                        $finalMatchedName = $card->card_name; 
+                        $finalMatchedName = $card->card_name;
                         if ($type === 'EXPENSE' || $type === 'DEBIT') {
                             $card->decrement('available_limit', $amount);
                             $card->increment('unbilled_outstanding', $amount);
                         } else {
-                            $card->increment('available_limit', $amount); 
+                            $card->increment('available_limit', $amount);
                             $remaining = $amount;
                             if ($card->billed_outstanding > 0) {
                                 $deduct = min($remaining, $card->billed_outstanding);
