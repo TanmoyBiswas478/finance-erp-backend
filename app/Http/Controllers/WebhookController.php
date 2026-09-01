@@ -9,7 +9,7 @@ use App\Models\Transaction;
 use App\Models\Account;      
 use App\Models\CreditCard;
 use App\Models\User; 
-use Carbon\Carbon; // 🎯 Timezone ke liye zaroori
+use Carbon\Carbon; 
 
 class WebhookController extends Controller
 {
@@ -30,24 +30,24 @@ class WebhookController extends Controller
         // 1. STATEMENT GENERATION DETECTION
         $isStatement = preg_match('/(statement is ready|statement for your.*total due)/i', $smsLower);
 
-        // 🎯 2. UPGRADED AMOUNT PARSER (Specially for Federal & Bandhan formats)
+        // 🎯 2. UPGRADED AMOUNT PARSER (Specially for App Notifications)
         $amount = 0;
         
-        // Priority A: Starts with INR/Rs/₹ (e.g., "INR 2,726.58 deposited")
+        // Priority A: Starts with INR/Rs/₹ (Standard SMS)
         if (preg_match('/(?:rs\.?|inr|₹)\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
-        // Priority B: Debited/Credited followed by amount (e.g., "Debited Rs 2726.58")
-        if ($amount == 0 && preg_match('/(?:debited|credited|deposited|spent|received|paid)\s+(?:with|by|for|rs\.?|inr|₹)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
+        // Priority B: App Notifications format ("Paid 200", "Sent 200", "Received 200")
+        if ($amount == 0 && preg_match('/(?:debited|credited|deposited|spent|received|paid|sent|payment of)\s+(?:to|from|with|by|for)?\s*([\d,]+\.\d{2}|[\d,]+)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
-        // Priority C: Bare amount followed by action
-        if ($amount == 0 && preg_match('/([\d,]+\.\d{2})\s+(?:debited|credited|deposited|spent|received|paid)/i', $sms, $matches)) {
+        // Priority C: Strict floating number fallback
+        if ($amount == 0 && preg_match('/([\d,]+\.\d{2})\s+(?:debited|credited|deposited|spent|received|paid|sent)/i', $sms, $matches)) {
             $amount = floatval(str_replace(',', '', $matches[1]));
         }
 
         if ($amount <= 0 && !$isStatement) {
-            Log::error("Amount parse failed for: " . $sms);
+            Log::error("Amount parse failed for Notification/SMS: " . $sms);
             return response()->json(['error' => 'Could not parse valid amount'], 422);
         }
 
@@ -65,7 +65,7 @@ class WebhookController extends Controller
             $type = 'EXPENSE'; 
         }
 
-        // 🎯 4. OPTIMIZED SOURCE IDENTIFICATION
+        // 🎯 4. OPTIMIZED SOURCE IDENTIFICATION (Includes App Support)
         $sourceName = 'Unknown';
         $sourceType = 'ACCOUNT';
 
@@ -79,19 +79,21 @@ class WebhookController extends Controller
         elseif (preg_match('/(supermoney|utkarsh|supercard|utkspr)/i', $smsLower)) {
             $sourceName = 'Utkarsh SuperMoney'; $sourceType = 'CREDIT_CARD';
         } 
-        elseif (preg_match('/(bdnsms)/i', $smsLower) || str_contains($smsLower, 'bandhan')) {
-            if (preg_match('/(a\/c|account|ac)/i', $smsLower)) {
-                $sourceName = 'Bandhan'; $sourceType = 'ACCOUNT';
-            } elseif (preg_match('/(credit|card|cc)\b/i', $smsLower)) {
+        elseif (preg_match('/(bdnsms|bandhan)/i', $smsLower)) { // bandhan will catch app notifications
+            if (preg_match('/(credit|card|cc)\b/i', $smsLower) && !preg_match('/(a\/c|account|ac)/i', $smsLower)) {
                 $sourceName = 'Bandhan CC'; $sourceType = 'CREDIT_CARD';
             } else {
                 $sourceName = 'Bandhan'; $sourceType = 'ACCOUNT'; 
             }
         } 
-        elseif (preg_match('/(jupiter|federal|fedbnk)/i', $smsLower)) {
+        elseif (preg_match('/(jupiter|federal|fedbnk|fedmobile)/i', $smsLower)) { // Fedmobile added
             $sourceName = 'Federal Bank'; $sourceType = 'ACCOUNT'; 
         } elseif (str_contains($smsLower, 'hdfc')) {
             $sourceName = 'HDFC'; $sourceType = 'ACCOUNT';
+        } 
+        // Auto-Route general UPI apps to Daily UPI Hub
+        elseif (preg_match('/(gpay|google pay|phonepe|paytm|cred)/i', $smsLower)) {
+            $sourceName = 'Federal Bank'; $sourceType = 'ACCOUNT'; 
         }
 
         // 5. HANDLE AUTOMATIC STATEMENT SHIFT 
@@ -139,34 +141,49 @@ class WebhookController extends Controller
             $category = ($type === 'INCOME') ? 'Income / Cashback' : 'Other Expenses';
         }
 
-        // 🛑 7. THE ANTI-SPAM UTR SHIELD (Fixed for exactly 12-digit UPI refs)
+        // 🛑 7. THE NEW APP NOTIFICATION & UTR SHIELD
         if ($sourceName !== 'Unknown' && $amount > 0) {
             $refId = null;
-            // 1st Priority: Extract exactly 12 digits (Standard for Indian UPI UTRs)
+            // Extract exactly 12 digits (Standard for Indian UPI UTRs)
             if (preg_match('/(?<!\d)(\d{12})(?!\d)/', $sms, $refMatches)) {
                 $refId = $refMatches[1];
-            } 
-            // 2nd Priority: Fallback for generic ref numbers
-            elseif (preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $sms, $refMatches)) {
+            } elseif (preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $sms, $refMatches)) {
                 $refId = $refMatches[1];
             }
 
-            // EXACT Duplicate block (blocks double hits from the same app for the exact same message)
+            // A) Exact Duplicate Check
             $exactDuplicate = Transaction::where('user_id', $userId)
                 ->where('raw_sms', $sms)
-                ->where('created_at', '>=', Carbon::now()->subSeconds(30))
+                ->where('created_at', '>=', now()->subSeconds(30))
                 ->first();
 
             if ($exactDuplicate) {
                 return response()->json(['status' => 'success', 'message' => 'Exact duplicate ignored']);
             }
 
-            // UTR Shield: Sirf tabhi block karega jab TYPE bhi same ho! (Debit & Credit dono ko allow karega)
+            // 🎯 B) FUZZY NOTIFICATION SHIELD (New)
+            // Agar SMS aur App Notification ek sath aate hain (same amount, same type, under 60 secs) toh doosre wale ko block kar dega
+            $fuzzyDuplicate = Transaction::where('user_id', $userId)
+                ->where('amount', $amount)
+                ->where('type', $type)
+                ->where('created_at', '>=', now()->subSeconds(60))
+                ->first();
+
+            if ($fuzzyDuplicate) {
+                // Agar pehle notification aaya jisme UTR nahi tha, aur ab SMS aaya jisme UTR hai, toh usko update kar lo bina balance kaate
+                if ($refId && !str_contains($fuzzyDuplicate->raw_sms, $refId)) {
+                    $fuzzyDuplicate->raw_sms = $fuzzyDuplicate->raw_sms . ' | UTR: ' . $refId;
+                    $fuzzyDuplicate->save();
+                }
+                return response()->json(['status' => 'success', 'message' => 'App Notification/SMS overlap blocked.']);
+            }
+
+            // C) UTR Shield Check
             if ($refId) {
                 $utrDuplicate = Transaction::where('user_id', $userId)
                     ->where('raw_sms', 'LIKE', "%{$refId}%")
-                    ->where('type', $type) // 🎯 Yeh sabse bada fix hai
-                    ->where('created_at', '>=', Carbon::now()->subDays(7))
+                    ->where('type', $type) 
+                    ->where('created_at', '>=', now()->subDays(7))
                     ->exists();
                     
                 if ($utrDuplicate) {
