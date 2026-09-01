@@ -31,7 +31,7 @@ class WebhookController extends Controller
         // 1. STATEMENT GENERATION DETECTION
         $isStatement = preg_match('/(statement is ready|statement for your.*total due)/i', $smsLower);
 
-        // 🤖 2. LLM-POWERED INTELLIGENT PARSER WITH RETRY SHIELD (Gemini 2.5 Flash)
+        // 🤖 2. LLM-POWERED INTELLIGENT PARSER WITH RETRY & APP NOTIFICATION SUPPORT
         $amount = 0;
         $type = 'EXPENSE';
         $sourceName = 'Unknown';
@@ -45,9 +45,11 @@ class WebhookController extends Controller
                 return response()->json(['error' => 'AI API Key not configured'], 500);
             }
 
-            $prompt = "Analyze this bank notification/SMS: \"{$sms}\". " .
+            // Enhanced prompt to catch Federal Bank / Jupiter app notifications even without explicit SMS keywords
+            $prompt = "Analyze this bank notification or push notification: \"{$sms}\". " .
                 "Extract the following details and return ONLY a valid JSON object without markdown formatting: " .
-                "{\"amount\": float, \"type\": \"EXPENSE\" or \"INCOME\", \"bank_name\": \"Federal Bank\" or \"Bandhan\" or \"HDFC\" or \"Slice\" or \"Slice CC\" or \"Utkarsh SuperMoney\" or \"Bandhan CC\", \"category\": \"Food & Shopping\" or \"Shopping\" or \"Travel\" or \"Bills & Utilities\" or \"Income / Cashback\" or \"Other Expenses\"}";
+                "{\"amount\": float, \"type\": \"EXPENSE\" or \"INCOME\", \"bank_name\": \"Federal Bank\" or \"Bandhan\" or \"HDFC\" or \"Slice\" or \"Slice CC\" or \"Utkarsh SuperMoney\" or \"Bandhan CC\", \"category\": \"Food & Shopping\" or \"Shopping\" or \"Travel\" or \"Bills & Utilities\" or \"Income / Cashback\" or \"Other Expenses\"}. " .
+                "Note: If the notification mentions FedMobile, Jupiter, or a UPI app credit/debit linked to an account, map bank_name to 'Federal Bank'.";
 
             $maxRetries = 3;
             $attempt = 0;
@@ -74,8 +76,6 @@ class WebhookController extends Controller
                         $cleanedJson = trim(str_replace(['```json', '```'], '', $aiResponseText));
                         $parsedData = json_decode($cleanedJson, true);
 
-                        Log::info("Parsed Amount: " . ($parsedData['amount'] ?? 'NULL'));
-
                         if (isset($parsedData['amount'])) {
                             $amount = floatval($parsedData['amount']);
                             $type = isset($parsedData['type']) ? strtoupper($parsedData['type']) : 'EXPENSE';
@@ -89,9 +89,8 @@ class WebhookController extends Controller
                             }
                         }
                     } else {
-                        // If it's a 503 High Demand error, wait 1 second and retry
                         if ($response->status() === 503 && $attempt < $maxRetries) {
-                            usleep(1000000); // Wait 1 second
+                            usleep(1000000); // Wait 1 second on high demand
                             continue;
                         }
                         Log::error("Gemini API Error: " . $response->body());
@@ -107,7 +106,6 @@ class WebhookController extends Controller
             }
         }
 
-        // Fallback if AI fails or amount is 0
         if ($amount <= 0 && !$isStatement) {
             Log::error("AI Amount parse failed for Notification/SMS: " . $sms);
             return response()->json([
@@ -139,62 +137,14 @@ class WebhookController extends Controller
                     'source' => $card->card_name,
                     'source_type' => 'CREDIT_CARD',
                     'raw_sms' => $sms,
-                    'description' => 'Auto-Generated via Bank SMS',
+                    'description' => 'Statement Generated for ' . $card->card_name,
                     'date' => Carbon::now('Asia/Kolkata'),
                 ]);
                 return response()->json(['status' => 'success', 'message' => 'Statement automatically generated']);
             }
         }
 
-        // 🛑 7. THE APP NOTIFICATION & UTR SHIELD
-        if ($sourceName !== 'Unknown' && $amount > 0) {
-            $refId = null;
-            if (preg_match('/(?<!\d)(\d{12})(?!\d)/', $sms, $refMatches)) {
-                $refId = $refMatches[1];
-            } elseif (preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $sms, $refMatches)) {
-                $refId = $refMatches[1];
-            }
-
-            // A) Exact Duplicate Check
-            $exactDuplicate = Transaction::where('user_id', $userId)
-                ->where('raw_sms', $sms)
-                ->where('created_at', '>=', now()->subSeconds(30))
-                ->first();
-
-            if ($exactDuplicate) {
-                return response()->json(['status' => 'success', 'message' => 'Exact duplicate ignored']);
-            }
-
-            // B) FUZZY NOTIFICATION SHIELD
-            $fuzzyDuplicate = Transaction::where('user_id', $userId)
-                ->where('amount', $amount)
-                ->where('type', $type)
-                ->where('created_at', '>=', now()->subSeconds(60))
-                ->first();
-
-            if ($fuzzyDuplicate) {
-                if ($refId && !str_contains($fuzzyDuplicate->raw_sms, $refId)) {
-                    $fuzzyDuplicate->raw_sms = $fuzzyDuplicate->raw_sms . ' | UTR: ' . $refId;
-                    $fuzzyDuplicate->save();
-                }
-                return response()->json(['status' => 'success', 'message' => 'App Notification/SMS overlap blocked.']);
-            }
-
-            // C) UTR Shield Check
-            if ($refId) {
-                $utrDuplicate = Transaction::where('user_id', $userId)
-                    ->where('raw_sms', 'LIKE', "%{$refId}%")
-                    ->where('type', $type)
-                    ->where('created_at', '>=', now()->subDays(7))
-                    ->exists();
-
-                if ($utrDuplicate) {
-                    return response()->json(['status' => 'success', 'message' => 'UTR already processed for this specific type']);
-                }
-            }
-        }
-
-        // 8. DATABASE & BALANCE SYNC WITH FLEXIBLE MAPPING
+        // 8. DATABASE & BALANCE SYNC WITH FLEXIBLE MAPPING & SHIELDS
         try {
             DB::beginTransaction();
             $finalMatchedName = $sourceName;
@@ -251,6 +201,54 @@ class WebhookController extends Controller
                 }
             }
 
+            // 🛑 7. THE APP NOTIFICATION & UTR SHIELD (Source-aware to prevent multi-bank parallel blocks)
+            if ($finalMatchedName !== 'Unknown' && $amount > 0) {
+                $refId = null;
+                if (preg_match('/(?<!\d)(\d{12})(?!\d)/', $sms, $refMatches)) {
+                    $refId = $refMatches[1];
+                } elseif (preg_match('/(?:ref|utr|upi|txn|no\.?|id).*?([a-zA-Z0-9]{8,15})/i', $sms, $refMatches)) {
+                    $refId = $refMatches[1];
+                }
+
+                // Exact Duplicate Check
+                $exactDuplicate = Transaction::where('user_id', $userId)
+                    ->where('raw_sms', $sms)
+                    ->where('created_at', '>=', now()->subSeconds(30))
+                    ->first();
+
+                if ($exactDuplicate) {
+                    DB::rollBack();
+                    return response()->json(['status' => 'success', 'message' => 'Exact duplicate ignored']);
+                }
+
+                // Fuzzy Shield (Scoped per bank source so simultaneous multi-bank credits work flawlessly)
+                $fuzzyDuplicate = Transaction::where('user_id', $userId)
+                    ->where('amount', $amount)
+                    ->where('type', $type)
+                    ->where('source', $finalMatchedName)
+                    ->where('created_at', '>=', now()->subSeconds(30))
+                    ->first();
+
+                if ($fuzzyDuplicate) {
+                    DB::rollBack();
+                    return response()->json(['status' => 'success', 'message' => 'Same bank transaction overlap blocked.']);
+                }
+
+                // UTR Shield Check
+                if ($refId) {
+                    $utrDuplicate = Transaction::where('user_id', $userId)
+                        ->where('raw_sms', 'LIKE', "%{$refId}%")
+                        ->where('type', $type)
+                        ->where('created_at', '>=', now()->subDays(7))
+                        ->exists();
+
+                    if ($utrDuplicate) {
+                        DB::rollBack();
+                        return response()->json(['status' => 'success', 'message' => 'UTR already processed for this specific type']);
+                    }
+                }
+            }
+
             $transaction = Transaction::create([
                 'user_id'     => $userId,
                 'amount'      => $amount,
@@ -259,7 +257,7 @@ class WebhookController extends Controller
                 'source'      => $finalMatchedName,
                 'source_type' => $sourceType,
                 'raw_sms'     => $sms,
-                'description' => 'Via AI Auto Webhook',
+                'description' => 'Credited/Debited via ' . $finalMatchedName, // Dynamic bank name note
                 'date'        => Carbon::now('Asia/Kolkata'),
             ]);
 
